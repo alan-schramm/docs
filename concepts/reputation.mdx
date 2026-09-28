@@ -34,14 +34,12 @@ Your overall `ReputationScore` is a composite number from 0 to 100, computed exc
 
 ```typescript
 const score = await client.reputation.get(participantId);
-console.log('Overall:', score.total);              // 0–100
-console.log('Trade Score:', score.tradeScore);
-console.log('Volume Score:', score.volumeScore);
-console.log('Settlement Score:', score.settlementScore);
-console.log('Dispute Rate:', score.disputeRate);   // lower is better
+console.log('Score:', score.total);
+console.log('Trades:', score.totalTrades);
+console.log('Dispute rate:', score.disputeRate); // lower is better
 ```
 
-The `total` field is the weighted composite. Use it as your primary trust signal when deciding whether to trade with a counterparty.
+Use `total` together with `totalTrades` and `disputeRate` when deciding whether to trade with a counterparty — a high score from few trades means less than the same score from many.
 
 ## Submitting a Rating
 
@@ -58,7 +56,7 @@ await client.reputation.rate({
 
 ## Leaderboard
 
-Fetch the top-ranked participants by composite score. This is useful for surfacing highly trusted liquidity providers in your UI.
+Fetch the top-ranked participants by score. This is useful for surfacing highly trusted liquidity providers in your UI.
 
 ```typescript
 const result = await client.reputation.leaderboard({ limit: 10 });
@@ -86,5 +84,5 @@ const peerScore = await client.reputation.getScoreByPeerId(peerId);
 ```
 
 <Tip>
-  Display reputation information in your UI using the `<ReputationBadge>` component from `@satsails/sdk-react`. It renders the composite score, dispute rate, and verification level in a consistent format — and updates automatically when the score changes.
+  Display reputation in your UI with the `<ReputationBadge participantId={id} />` component from `@satsails/sdk-react`. It fetches the score itself and stays in sync through TanStack Query.
 </Tip>

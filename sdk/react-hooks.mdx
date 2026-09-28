@@ -106,7 +106,7 @@ function EscrowPanel({ escrowId }: { escrowId: string }) {
       <button onClick={() => markPaymentSent.mutate()}>
         Payment Sent
       </button>
-      <button onClick={() => release.mutate('bc1q...')}>
+      <button onClick={() => release.mutate('')}>
         Release
       </button>
     </div>
@@ -120,7 +120,7 @@ The hook exposes the following mutations:
 |---|---|---|
 | `lock` | `settlement.lock(escrowId)` | Lock funds into escrow |
 | `markPaymentSent` | `settlement.markPaymentSent(escrowId)` | Buyer marks off-chain payment as sent |
-| `release` | `settlement.release(escrowId, toAddress)` | Release funds to the buyer — pass `toAddress` string to `mutate()` |
+| `release` | `settlement.release(escrowId, toAddress)` | Release funds to the buyer (direct-call providers). The node always pays the buyer's registered payout address; the string you pass to `mutate()` is ignored. Client-held-key escrows release through `initiateRelease()` + `submitTransactionSignature()` via `useSailsClient()`. |
 | `refund` | `settlement.refund(escrowId)` | Refund funds to the seller |
 | `dispute` | `settlement.dispute(escrowId, reason, evidence?)` | Open a dispute — pass `{ reason, evidence? }` to `mutate()` |
 
@@ -152,9 +152,10 @@ function AuthFlow() {
 
 | Field | Type | Description |
 |---|---|---|
-| `query` | `UseQueryResult<Participant>` | Fetches the participant's public profile. Disabled when `participantId` is `undefined`. |
-| `create` | mutation | Calls `identity.create(keypair?, displayName?)` |
-| `createWithPublicKey` | mutation | Calls `identity.createWithPublicKey(publicKeyHex, displayName?)` — wallet-backed, no raw secret key |
+| `query` | `UseQueryResult<PublicParticipant>` | Fetches the participant's public profile. Disabled when `participantId` is `undefined`. |
+| `create` | mutation | Calls `identity.create(keypair?, displayName?)` — registers with proof of possession |
+| `createWithWallet` | mutation | Calls `identity.createWithWallet(publicKeyHex, wallet, displayName?)` — wallet-backed registration, no raw secret key |
+| `createWithPublicKey` | mutation | **Deprecated** — the node requires proof of possession, which this can't produce. Use `createWithWallet`. |
 | `challenge` | mutation | Calls `identity.challenge(publicKeyHex)` |
 | `authenticate` | mutation | Calls `identity.authenticate(keypair)` and stores the session token |
 | `authenticateWithWallet` | mutation | Calls `identity.authenticateWithWallet(publicKeyHex, wallet)` |
@@ -235,7 +236,7 @@ function ReputationPanel({ participantId }: { participantId: string }) {
   return (
     <div>
       <ReputationBadge participantId={participantId} />
-      <p>Trade score: {score?.tradeScore} / Settlement score: {score?.settlementScore}</p>
+      <p>Score: {score?.total} · Trades: {score?.totalTrades}</p>
       <button onClick={() => rate.mutate({ tradeId: '...', ratedId: participantId, score: 5 })}>
         Rate
       </button>
@@ -265,21 +266,18 @@ Wraps RFC-013 Capability Registry operations — listing, registering, revoking,
 import { useSailsCapabilities } from '@satsails/sdk-react';
 
 function CapabilitiesPanel({ participantId }: { participantId: string }) {
-  const { query, register, revoke } = useSailsCapabilities(participantId);
+  const { query, ensureCanonicalGrants, revoke } = useSailsCapabilities(participantId);
 
   return (
     <div>
       {query.data?.map(grant => (
-        <div key={grant.grantId}>
-          {grant.capabilityName}
-          <button onClick={() => revoke.mutate(grant.grantId)}>Revoke</button>
+        <div key={grant.id}>
+          {grant.capabilityName}: {grant.scope.join(', ')}
+          <button onClick={() => revoke.mutate(grant.id)}>Revoke</button>
         </div>
       ))}
-      <button onClick={() => register.mutate({
-        capabilityName: 'p2p-trading',
-        scope: ['trade:create', 'escrow:lock'],
-      })}>
-        Register
+      <button onClick={() => ensureCanonicalGrants.mutate(participantId)}>
+        Grant trading and settlement
       </button>
     </div>
   );
@@ -289,9 +287,10 @@ function CapabilitiesPanel({ participantId }: { participantId: string }) {
 | Field | Type | Description |
 |---|---|---|
 | `query` | `UseQueryResult<CapabilityGrant[]>` | Lists all grants for the participant |
-| `register` | mutation | Calls `capabilities.register(input)` |
+| `ensureCanonicalGrants` | mutation | Calls `capabilities.ensureCanonicalGrants(participantId)` — idempotently self-issues the canonical `trade-coordination` and `settlement` grants |
+| `register` | mutation | Calls `capabilities.register(input)` — canonical (`capabilityName`, `scope`) pairs only, see [Capabilities](/api/capabilities) |
 | `revoke` | mutation | Calls `capabilities.revoke(grantId)` |
-| `registerFromWallet` | mutation | Calls `capabilities.registerFromWallet(wallet)` — derives scope from the wallet's own capabilities declaration |
+| `registerFromWallet` | mutation | **Deprecated** — ignores the wallet and self-issues the canonical grants. Use `ensureCanonicalGrants`. |
 
 ---
 
@@ -350,7 +349,7 @@ function ProofPanel({ claimId }: { claimId: string }) {
     ```
   </Card>
   <Card title="EscrowStatusBadge" icon="lock" href="/sdk/react-hooks#escrowstatusbadge">
-    A colored pill showing the current escrow status (e.g. `LOCKED`, `RELEASED`).
+    A colored pill showing the current escrow status (e.g. `FUNDS_LOCKED`, `COMPLETED`).
     ```tsx
     <EscrowStatusBadge status={escrow.status} />
     ```

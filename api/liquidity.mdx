@@ -125,7 +125,7 @@ Create and publish a new offer to the Sails liquidity network. Your `participant
 ### Request Body
 
 <ParamField body="asset" type="string" required>
-  The asset you want to trade, e.g. `BTC` or `USDT`.
+  The asset you want to trade — one of `BTC`, `LN_BTC`, `LIQUID_BTC`, `RSK_BTC`, `USDT_ERC20`, `USDT_TRC20`, `USDT_LIQUID`, `USDT_LIGHTNING`, `SPARK`, `STACKS`.
 </ParamField>
 
 <ParamField body="side" type="string" required>
@@ -149,13 +149,29 @@ Create and publish a new offer to the Sails liquidity network. Your `participant
 </ParamField>
 
 <ParamField body="paymentDetails" type="string">
-  Payment routing details for your chosen method (e.g. your PIX key, IBAN, or bank account number). Shared with your counterparty during negotiation — never broadcast publicly.
+  Payment routing details for your chosen method (for example your PIX key or IBAN). Never returned by the public offer endpoints.
+</ParamField>
+
+<ParamField body="priceBrl" type="string">
+  Optional price per unit in BRL, as a decimal string.
+</ParamField>
+
+<ParamField body="network" type="string">
+  Optional network for the asset (for example `mainnet` or `testnet`).
+</ParamField>
+
+<ParamField body="description" type="string">
+  Optional free-text description shown with the offer.
+</ParamField>
+
+<ParamField body="idempotencyKey" type="string">
+  Optional (up to 200 characters). Retrying with the same key returns the same offer instead of publishing a duplicate.
 </ParamField>
 
 <CodeGroup>
 ```bash Request
 curl -X POST https://your-node.example.com/v1/liquidity/offers \
-  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..." \
+  -H "Authorization: Bearer <sessionToken>" \
   -H "Content-Type: application/json" \
   -d '{
     "asset": "BTC",
@@ -195,7 +211,7 @@ curl -X POST https://your-node.example.com/v1/liquidity/offers \
 
 **`GET /v1/liquidity/offers/:id`**
 
-Retrieve a single offer by its ID, including the seller's public reputation profile. Use this before opening a trade to review your counterparty's history.
+Retrieve a single offer by its ID, including the owner's public identity (`id`, `publicKey`, `displayName`, `peerId`, `verified`) and trade stats (`reputationScore`, `totalTrades`, `disputeCount`). No session required. Private fields such as `paymentDetails` are never included. Use this before opening a trade to review your counterparty.
 
 ### Path Parameters
 
@@ -329,7 +345,7 @@ Retrieve all offers belonging to the authenticated participant, including non-AC
 <CodeGroup>
 ```bash Request
 curl https://your-node.example.com/v1/liquidity/offers/mine \
-  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..."
+  -H "Authorization: Bearer <sessionToken>"
 ```
 
 ```json Response
@@ -390,7 +406,7 @@ Change the status of one of your offers. You can pause an offer to temporarily h
 <CodeGroup>
 ```bash Request
 curl -X PATCH https://your-node.example.com/v1/liquidity/offers/offer_abc123/status \
-  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..." \
+  -H "Authorization: Bearer <sessionToken>" \
   -H "Content-Type: application/json" \
   -d '{ "status": "PAUSED" }'
 ```

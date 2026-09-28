@@ -1,72 +1,63 @@
 ---
 title: "Sails Protocol: Open Coordination for Sovereign Finance"
 sidebarTitle: "Introduction"
-description: "Sails Protocol is an open specification and SDK for building interoperable P2P financial markets — no centralized custody, no single point of failure."
+description: "Sails Protocol is an open specification and SDK for building interoperable P2P financial marketplaces — identity, liquidity, trades, escrow, disputes, and reputation, without a central custodian."
 ---
 
-Sails Protocol is open infrastructure for building interoperable P2P Financial Marketplaces. It provides the identity, reputation, escrow, settlement, negotiation, and liquidity-discovery infrastructure that wallets, fintechs, OTC desks, and AI trading agents need to run non-custodial P2P markets — standardized once, so no one has to rebuild it from scratch. When you integrate Sails, your application doesn't operate an isolated exchange: it joins a shared, interoperable network where every other Sails participant is a potential counterparty.
+Sails Protocol is open infrastructure for building interoperable **P2P financial marketplaces**. It provides the identity, liquidity discovery, trade coordination, escrow and settlement, dispute, and reputation layers that wallets, fintechs, and OTC desks need to let their users trade directly with each other — standardized once, so nobody rebuilds them from scratch.
 
-## What You Can Build
+The **Sails P2P Trading SDK** (`@satsails/p2p-trading-sdk`) is the primary way to integrate. You bring the product and the users; a Sails node brings the coordination.
 
-Sails Protocol is a coordination layer, not an application. You bring the product — Sails brings the infrastructure that powers it.
+## What you can build
 
 <CardGroup cols={2}>
-  <Card title="P2P Crypto/Fiat Exchanges" icon="arrow-right-arrow-left" href="/quickstart">
-    Let your users buy and sell BTC, USDT, and other digital assets directly with each other, using any local payment method. Sails handles matching, escrow, and settlement.
+  <Card title="P2P buy/sell inside a wallet" icon="wallet" href="/quickstart">
+    Let users buy and sell BTC, USDT, and other assets directly with each other using local payment methods like PIX, with escrow and disputes handled by the protocol.
   </Card>
-  <Card title="Non-Custodial OTC Desks" icon="building-columns" href="/quickstart">
-    Power large-volume over-the-counter trades with cryptographic identity, portable reputation, and pluggable multisig or Lightning HODL escrow — no custodian required.
+
+  <Card title="P2P exchanges and marketplaces" icon="arrow-right-arrow-left" href="/guides/p2p-trade">
+    Run an offer book, trades, chat, and settlement on top of Sails instead of building matching, escrow, and arbitration yourself.
   </Card>
-  <Card title="AI Agent Trading Bots" icon="robot" href="/architecture">
-    Build fully autonomous trading agents that generate trade intents, discover counterparties, negotiate terms, and settle funds — all on-device, using QVAC for local AI inference.
+
+  <Card title="OTC desks" icon="building-columns" href="/guides/escrow-lifecycle">
+    Larger trades with cryptographic identity, outcome-based reputation, and client-held-key Bitcoin multisig escrow.
   </Card>
-  <Card title="Freelancer Escrow Platforms" icon="file-contract" href="/quickstart">
-    Create milestone-based payment flows with non-custodial escrow, proof-of-delivery claims, and dispute escalation — built on the same OpenSettlement and OpenProof primitives.
+
+  <Card title="AI-assisted trading" icon="robot" href="/guides/ai-agents">
+    Draft intents and offers from plain language and pre-check risk with local AI (QVAC), then match within limits the user declared. The user always approves.
   </Card>
 </CardGroup>
 
-## The Protocol Stack
+## The stack
 
-Sails Protocol does not reinvent wallet infrastructure, peer-to-peer networking, or AI — it coordinates three best-in-class technologies that already exist and assembles them into a unified economic layer.
+Sails coordinates proven components rather than reinventing them:
 
-**WDK (Tether's Wallet Development Kit)** handles all key derivation and transaction signing. Sails never touches a private key directly; it tells WDK *when* to sign via `executeSettlement()`, while key material stays entirely in the user's non-custodial wallet.
+- **WDK (Tether's Wallet Development Kit)** — wallet and settlement building blocks. The `WDK_USDT_EVM` provider uses it for real on-chain USDT execution (as a server-custodial reference implementation).
+- **Pears (Holepunch)** — HyperDHT peer discovery and direct, NAT-traversed connections between participants' nodes, alongside the node's regular HTTP and WebSocket APIs.
+- **QVAC (Tether)** — local AI (llama.cpp) running on the Sails node, with no cloud AI service. It drafts intents and offers, assesses risk, flags social-engineering patterns, and can propose advisory dispute rulings.
 
-**Pears (Holepunch)** provides serverless P2P discovery and direct NAT-traversed connections between nodes using HyperDHT and Hyperswarm. Sails never runs its own DHT or discovery server — it only decides what gets sent once Pears has two peers connected.
+See [Architecture](/architecture) for how they fit together.
 
-**QVAC (Tether)** is an on-device LLM (llama.cpp, GPU-accelerated) that runs entirely locally — no cloud API. Sails uses QVAC for structured trade intent generation, offer matching, and risk assessment. QVAC is a **Crypto-Native Agent**: it only ever acts on digital assets already in the user's wallet, never on fiat or banking rails.
-
-<Note>
-  Sails Protocol does not replace WDK, Pears, or QVAC. It amplifies their combined value by providing the missing economic coordination layer between them.
-</Note>
-
-## The Eight Protocol Modules
-
-The protocol is organized into eight modules — four cross-module services used by every application, and four application modules that deliver specific use cases.
-
-### Cross-module services
+## Modules
 
 | Module | What it does |
-|---|---|
-| **OpenIdentity** | Ed25519 cryptographic identity, portable across every application and platform. No email, no password — one keypair per participant, forever. |
-| **OpenReputation** | Outcome-based reputation score tied to the cryptographic identity, not any platform. Any module can read or contribute to a participant's score. |
-| **OpenSettlement** | Abstract, pluggable escrow: Mock → Multisig 2-of-3 → Lightning HODL → WDK USDT EVM. The `SettlementProvider` interface means you can swap escrow types without changing your application code. |
-| **OpenLiquidity** | Offer publication and discovery. The order book belongs here — not to the trading module — so every future application module can reuse the same discovery layer. |
+| --- | --- |
+| **OpenIdentity** | Ed25519 identities with proof of possession and challenge-response sessions |
+| **OpenLiquidity** | Offer publication, discovery, order book, and matching |
+| **OpenP2P** | Trades, trade chat, and trade status |
+| **OpenSettlement** | Pluggable escrow providers, signing rounds, disputes, arbitration, payout addresses |
+| **OpenReputation** | Outcome-based trust scores, ratings, and vouches |
+| **OpenProof** | The `Claim → Proof → Verification` chain for payment and dispute evidence |
+| **OpenAgents** | Local-AI assistance and capability grants |
+| **OpenFinance** | Future: lending, swaps, and yield intents reusing the same layers |
 
-### Application modules
+## Principles
 
-| Module | What it does |
-|---|---|
-| **OpenP2P** | The core P2P trading module. Orchestrates the full trade lifecycle — intent, negotiation, escrow, proof, release — using the four cross-module services above. |
-| **OpenProof** | Standardizes the `Claim → Proof → Verification` chain for every module. Dispute evidence, payment proofs, and future underwriting all use this instead of each building their own format. |
-| **OpenAgents** | QVAC integration for autonomous trading and fraud prevention. The Social Engineering Agent watches live chat messages for fraud-precursor patterns and raises a `RISK_WARNING` — detection only, never unilateral action. |
-| **OpenFinance** | Future financial modules: `LoanIntent`, `SwapIntent`, `EarnIntent`. Reuses OpenSettlement, OpenLiquidity, and OpenReputation without duplicating any logic. |
-
-## Key Principles
-
-- **Non-custodial by design.** Sails Protocol never holds funds, never intermediates fiat, and never owns an order book. Every escrow provider is pluggable, and keys stay with participants — always.
-- **Open specification.** Any wallet, fintech, or agent can implement the Sails Protocol spec in any language. The TypeScript reference implementation and the `@satsails/p2p-trading-sdk` package are one implementation, not the specification itself.
-- **Cryptographic identity and portable reputation.** Every participant's identity is an Ed25519 keypair. Reputation is accumulated against that keypair — not against a platform account — so it follows participants across every application that integrates Sails.
+- **No central custodian.** Client-held-key providers (`MULTISIG`, `LIGHTNING_HODL`, `SAFE_GUARD_EVM`) need two of three keys to move funds — buyer and seller hold theirs; the node holds an arbiter key used only to execute signed dispute rulings. Fiat never passes through the protocol. The one disclosed exception is `WDK_USDT_EVM`, a server-custodial reference implementation.
+- **Open specification.** Any wallet or fintech can implement the Sails spec in any language. The TypeScript reference implementation and the SDK are one implementation, not the specification itself.
+- **Identity you own.** A participant is an Ed25519 keypair, not a platform account. You register the same key on any node you use.
+- **Verifiable decisions.** Dispute rulings execute only with the assigned arbiter's signature; AI output is advisory and never moves funds.
 
 <Note>
-  Sails Protocol is currently at **v0.1** with a stable API contract. The five core modules — OpenP2P, OpenIdentity, OpenSettlement, OpenLiquidity, and OpenReputation — are fully operational with real routes and a real service layer. No breaking changes will be introduced to the public API before v1.0.
+  The SDK release line is `0.2.0`, under a pre-v1 compatibility contract: documented SDK methods don't change incompatibly before v1.0. Real-value use of each settlement provider is at a different stage — check the provider table in [Escrow Lifecycle](/guides/escrow-lifecycle).
 </Note>

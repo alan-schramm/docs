@@ -26,7 +26,7 @@ pnpm add @satsails/p2p-trading-sdk
 
 ## Install the React SDK
 
-If you are building a Next.js or React application, install `@satsails/sdk-react` alongside `@tanstack/react-query`, which powers its caching and background-refetch behavior.
+If you are building a Next.js or React application, install `@satsails/sdk-react` alongside `@tanstack/react-query`, which powers its caching and background-refetch behavior. The React SDK requires React 19 and TanStack Query 5.
 
 <CodeGroup>
 ```bash npm
@@ -122,6 +122,12 @@ The SDK ships with complete TypeScript types generated from the source. No `@typ
 }
 ```
 
+## Optional dependencies
+
+`@aws-sdk/client-kms` is an optional peer dependency of `@satsails/p2p-trading-sdk`. You only need it if your own code uses the KMS-backed signing helpers; everything else works without it.
+
+## Versioning
+
 <Note>
-  The SDK is at v0.1 with a stable API contract — no breaking changes to any documented method, parameter, or return shape until v1.0. New optional parameters and new methods may be added at any time; those are additive and will not break existing code.
+  The current release line is `0.2.0` for `@satsails/p2p-trading-sdk`, `@satsails/sdk-react`, and `@satsails/p2p-schemas`. It follows a pre-v1 compatibility contract: documented methods don't change incompatibly before v1.0. New optional parameters and new methods may be added — those are additive and won't break existing code. A few methods are marked deprecated (for example `identity.createWithPublicKey()`); they keep working where the node allows it, and their replacements are listed in the [SailsClient reference](/sdk/client).
 </Note>

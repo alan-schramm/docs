@@ -1,38 +1,36 @@
 ---
 title: "OpenAgents API: AI Intent Generation and Risk Assessment"
 sidebarTitle: "Agents"
-description: "REST endpoints for generating trade and offer intents from natural language using QVAC on-device AI, and for assessing trade risk before executing."
+description: "REST endpoints that use QVAC on-device AI to draft trade and offer intents from plain language and to assess an intent's risk before you act on it."
 ---
 
-The OpenAgents API exposes QVAC — Tether's on-device LLM — for intelligent trade assistance. All inference runs locally on your node using a quantized Llama 3.2 1B model; no data leaves your device and no cloud dependency is involved. These endpoints are useful for building natural-language trade flows, surfacing AI-generated offer suggestions, and performing pre-trade risk checks before committing to a counterparty.
+OpenAgents exposes QVAC — Tether's local AI runtime — for trade assistance. Inference runs on the Sails node itself with a quantized Llama 3.2 1B model (llama.cpp); no cloud AI service is involved. Each endpoint is a single model call: it drafts a structured intent or assesses one, once. None of them negotiate with a counterparty or keep state between calls.
 
 <Note>
-  All three endpoints require an active session. They share the platform's critical-tier rate limit because each call performs genuine local model inference, which is meaningfully more expensive than a typical read or write even without cloud costs.
+  All three endpoints require a session and share a stricter rate limit, because each call runs real model inference. They never persist anything or act on your behalf — always review the output before using it.
 </Note>
+
+| Method | Path | Description |
+| --- | --- | --- |
+| POST | `/v1/agents/generate-trade-intent` | Draft a buyer's trade intent from a goal |
+| POST | `/v1/agents/generate-offer-intent` | Draft a seller's offer from a goal |
+| POST | `/v1/agents/assess-intent-risk` | Assess an intent's risk |
 
 ---
 
-## POST /v1/agents/generate-trade-intent
+## Generate a trade intent
 
-Generate a structured `TradeIntent` from a natural-language goal. Use this to let buyers describe what they want in plain language and receive a validated, protocol-ready intent payload in return.
-
-### Request Body
+**`POST /v1/agents/generate-trade-intent`**
 
 <ParamField body="goal" type="string" required>
-  A natural-language description of what the buyer wants to accomplish. Be specific about asset, amount, payment method, and any price constraints.
+  Plain-language description of what you want to buy (1–2,000 characters). Mention asset, amount, payment method, and price limits.
 </ParamField>
 
-### Example Request
-
-```json
-{
-  "goal": "Buy 0.01 BTC using PIX, max $46,000"
-}
+```json Request
+{ "goal": "Buy 0.01 BTC using PIX, max $46,000" }
 ```
 
-### Example Response
-
-```json
+```json Response (data)
 {
   "asset": "BTC",
   "side": "BUY",
@@ -43,52 +41,23 @@ Generate a structured `TradeIntent` from a natural-language goal. Use this to le
 }
 ```
 
-<Expandable title="Response fields">
-  <ResponseField name="asset" type="string">
-    The crypto asset to acquire (e.g. `"BTC"`, `"USDT_ERC20"`).
-  </ResponseField>
-  <ResponseField name="side" type="string">
-    Always `"BUY"` for trade intents generated on behalf of a buyer.
-  </ResponseField>
-  <ResponseField name="maxValue" type="string">
-    Maximum acceptable trade value as a decimal string.
-  </ResponseField>
-  <ResponseField name="minValue" type="string">
-    Minimum acceptable trade value as a decimal string. May be omitted if the model could not infer a lower bound from your goal.
-  </ResponseField>
-  <ResponseField name="currency" type="string">
-    The fiat currency denomination (e.g. `"USD"`, `"BRL"`).
-  </ResponseField>
-  <ResponseField name="fiatMethod" type="string">
-    The fiat payment rail to use (e.g. `"PIX"`, `"BANK_TRANSFER"`, `"SEPA"`).
-  </ResponseField>
-</Expandable>
-
-You can pass the response directly to `POST /v1/intents` as the payload for a `TradeIntent` after reviewing and confirming the generated values.
+Fields the model can't infer from your goal may be missing. After reviewing the values, you can use them as the payload of a `TradeIntent` in `POST /v1/intents` (see [Intents](/concepts/intents)).
 
 ---
 
-## POST /v1/agents/generate-offer-intent
+## Generate an offer intent
 
-Generate a structured `OfferIntent` from a natural-language goal. Use this to help sellers quickly produce a well-formed offer without manually filling in every field.
-
-### Request Body
+**`POST /v1/agents/generate-offer-intent`**
 
 <ParamField body="goal" type="string" required>
-  A natural-language description of what the seller wants to offer. Include the asset, quantity range, price, and accepted payment methods.
+  Plain-language description of what you want to sell (1–2,000 characters).
 </ParamField>
 
-### Example Request
-
-```json
-{
-  "goal": "Sell up to 1 BTC at $45,000 accepting bank transfer"
-}
+```json Request
+{ "goal": "Sell up to 1 BTC accepting bank transfer" }
 ```
 
-### Example Response
-
-```json
+```json Response (data)
 {
   "asset": "BTC",
   "side": "SELL",
@@ -98,93 +67,60 @@ Generate a structured `OfferIntent` from a natural-language goal. Use this to he
 }
 ```
 
-<Tip>
-  If the model cannot confidently parse a particular field from your goal text (for example, if no minimum amount was mentioned), it will omit that field from the response. Always review the generated payload before publishing an offer.
-</Tip>
+Review the draft and add your price before publishing it with `POST /v1/liquidity/offers`.
 
 ---
 
-## POST /v1/agents/assess-intent-risk
+## Assess an intent's risk
 
-Assess the risk of a trade intent before you execute it. Pass any intent payload and QVAC will analyze the counterparty's reputation, trade history, and market context to return a risk verdict and recommendation.
+**`POST /v1/agents/assess-intent-risk`**
 
-### Request Body
+The assessment is based only on the intent you send — it doesn't look up a counterparty's reputation or history.
 
 <ParamField body="asset" type="string" required>
-  The asset involved in the trade (e.g. `"BTC"`, `"USDT_ERC20"`).
+  `BTC`, `LN_BTC`, `LIQUID_BTC`, `RSK_BTC`, `USDT_ERC20`, `USDT_TRC20`, `USDT_LIQUID`, `USDT_LIGHTNING`, `SPARK`, or `STACKS`.
 </ParamField>
 
 <ParamField body="side" type="string" required>
-  `"BUY"` or `"SELL"`.
+  `BUY` or `SELL`.
 </ParamField>
 
 <ParamField body="maxValue" type="string">
-  Maximum value of the trade as a decimal string.
+  Maximum value, as a decimal string.
 </ParamField>
 
 <ParamField body="minValue" type="string">
-  Minimum value of the trade as a decimal string.
+  Minimum value, as a decimal string.
 </ParamField>
 
 <ParamField body="currency" type="string">
-  The fiat currency denomination.
+  `BRL`, `USD`, `EUR`, `GBP`, `ARS`, `MXN`, `NGN`, or `INR`.
 </ParamField>
 
 <ParamField body="fiatMethod" type="string">
-  The fiat payment rail being used.
+  `PIX`, `TED`, `BANK_TRANSFER`, `CRYPTO_DIRECT`, `LIGHTNING_DIRECT`, `CASH`, or `OTHER`.
 </ParamField>
 
-### Example Request
-
-```json
+```json Response (data)
 {
-  "asset": "BTC",
-  "side": "BUY",
-  "maxValue": "46000",
-  "currency": "USD",
-  "fiatMethod": "PIX"
+  "risk": "low",
+  "reasoning": "Moderate amount on an instant, widely used payment rail.",
+  "recommendation": "proceed"
 }
 ```
 
-### Example Response
+<ResponseField name="risk" type="string">
+  `low`, `medium`, or `high`.
+</ResponseField>
 
-```json
-{
-  "risk": "LOW",
-  "reasoning": "Counterparty has 87/100 reputation and 48 completed trades. No disputes on record. PIX is a well-established, low-fraud payment rail in this region.",
-  "recommendation": "PROCEED"
-}
-```
+<ResponseField name="reasoning" type="string">
+  The model's explanation.
+</ResponseField>
 
-<Expandable title="Response fields">
-  <ResponseField name="risk" type="string">
-    Risk level: `"LOW"`, `"MEDIUM"`, or `"HIGH"`.
-  </ResponseField>
-  <ResponseField name="reasoning" type="string">
-    Human-readable explanation of the risk assessment, including relevant reputation data and contextual factors.
-  </ResponseField>
-  <ResponseField name="recommendation" type="string">
-    Suggested action: `"PROCEED"`, `"CAUTION"`, or `"ABORT"`.
-  </ResponseField>
-</Expandable>
+<ResponseField name="recommendation" type="string">
+  `proceed`, `hold`, or `reject`.
+</ResponseField>
 
-<Tabs>
-  <Tab title="Risk levels">
-    | Value | Meaning |
-    |---|---|
-    | `LOW` | Counterparty is well-established, payment method is reliable, no red flags detected. |
-    | `MEDIUM` | One or more factors warrant attention — review the `reasoning` field before proceeding. |
-    | `HIGH` | Significant risk indicators present. Strongly consider the `ABORT` recommendation. |
-  </Tab>
-  <Tab title="Recommendations">
-    | Value | Meaning |
-    |---|---|
-    | `PROCEED` | No significant concerns. Safe to continue. |
-    | `CAUTION` | Proceed with awareness. Review the reasoning and consider asking the counterparty for additional verification. |
-    | `ABORT` | QVAC has detected signals that make this trade inadvisable. Do not proceed. |
-  </Tab>
-</Tabs>
-
-<Note>
-  This endpoint returns `503 Service Unavailable` if QVAC is not configured on the node. The on-device model must be installed and active for inference to run. See your node's configuration guide for setup instructions.
-</Note>
+<Warning>
+  The assessment is advisory output from a small local model. It can be wrong — treat it as one input to your decision, never as a guarantee.
+</Warning>

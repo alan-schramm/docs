@@ -1,135 +1,103 @@
 ---
 title: "Non-Custodial Settlement and Escrow in Sails Protocol"
 sidebarTitle: "Settlement"
-description: "Sails Protocol supports five available escrow provider types (MOCK, MULTISIG, LIGHTNING_HODL, WDK_USDT_EVM, SAFE_GUARD_EVM) plus one reserved, not-yet-implemented type (LIQUID_COVENANT). Custody differs per provider — most are non-custodial; WDK_USDT_EVM is a server-custodial reference implementation."
+description: "How Sails settles trades through pluggable escrow providers — five available (MOCK, MULTISIG, LIGHTNING_HODL, WDK_USDT_EVM, SAFE_GUARD_EVM) plus one reserved (LIQUID_COVENANT) — and what each means for custody."
 ---
 
-Settlement in Sails Protocol is handled through pluggable escrow providers. Most providers are non-custodial — Sails never holds the keys needed to move your funds. One disclosed exception: `WDK_USDT_EVM` is a **server-custodial reference implementation** (see below) — a single server-held key can sign its escrows. The escrow type you choose determines how funds are locked, who holds the keys, and how the release is authorized. You pick the provider that matches your asset, your network, and your security requirements.
+Settlement is where a trade's value actually moves. Sails does it through pluggable **settlement providers**: the escrow type decides how funds are locked, who holds which keys, and what it takes to release them. Pick the provider that matches your asset, network, and trust requirements — each escrow discloses its own `custodyModel`.
 
-## Escrow Provider Types
+## Providers
 
 <CardGroup cols={2}>
-  <Card title="MOCK" icon="flask" href="/concepts/settlement">
-    **Asset:** Any (simulated)  
-    **Use case:** Development and testing only. No real funds move. Use this provider while you build and test your integration before going to mainnet.
+  <Card title="MOCK" icon="flask">
+    **Custody:** none — no real funds. For development and tests only.
   </Card>
-  <Card title="MULTISIG" icon="bitcoin" href="/concepts/settlement">
-    **Asset:** BTC  
-    **Use case:** Non-custodial Bitcoin escrow. Funds are locked in a 2-of-3 multisig output. You generate and hold a secp256k1 keypair — Sails never sees your private key.
+
+  <Card title="MULTISIG" icon="bitcoin">
+    **Asset:** BTC. 2-of-3 P2WSH multisig: buyer and seller each hold a key on their own device; the node holds the arbiter key. Any two keys can spend — buyer and seller together, or the arbiter with one party after a dispute ruling.
   </Card>
-  <Card title="LIGHTNING_HODL" icon="bolt" href="/concepts/settlement">
-    **Asset:** LN\_BTC  
-    **Use case:** Lightning HODL invoices. Non-custodial Lightning escrow — funds are held in a HODL invoice until the release condition is met and you sign the release.
+
+  <Card title="LIGHTNING_HODL" icon="bolt">
+    **Asset:** LN_BTC. Arkade (Ark protocol) VTXO/Taproot escrow — not a classic Lightning hold invoice. Same client-held key split as `MULTISIG`. Testnet/mutinynet today.
   </Card>
-  <Card title="LIQUID_COVENANT" icon="droplet" href="/concepts/settlement">
-    **Asset:** LIQUID_BTC, USDT_LIQUID<br />**Status:** Reserved — not yet implemented. Recognized by the protocol schema; no working provider exists today, and it cannot currently be selected.
+
+  <Card title="SAFE_GUARD_EVM" icon="shield">
+    **Asset:** EVM stablecoins. Safe smart account with a transaction guard and ERC-4337: buyer and seller keys client-held, a KMS-held arbiter co-signer. Needs a live EVM RPC and bundler on the node.
   </Card>
-  <Card title="WDK_USDT_EVM" icon="circle-dollar-sign" href="/concepts/settlement">
-    **Asset:** USDT_ERC20<br />**Use case:** Tether WDK EVM integration. **Server-custodial reference implementation** — a single server-held key signs every escrow. Real on-chain execution, but not a non-custodial design; see [Escrow Lifecycle](/guides/escrow-lifecycle) for detail.
+
+  <Card title="WDK_USDT_EVM" icon="coins">
+    **Asset:** USDT_ERC20. Tether WDK integration — a **server-custodial reference implementation**: one operator-held seed controls its escrows. Testnet only; not a production custody model.
   </Card>
-  <Card title="SAFE_GUARD_EVM" icon="shield" href="/concepts/settlement">
-    **Asset:** USDT\_ERC20  
-    **Use case:** ERC-4337 Safe multisig. Two-party control over a Smart Account — the highest-security EVM option.
+
+  <Card title="LIQUID_COVENANT" icon="droplet">
+    **Reserved** — not implemented. Creating an escrow with this type is rejected.
   </Card>
 </CardGroup>
 
-## Escrow Lifecycle
+<Note>
+  "Client-held keys" means no single party can move funds alone — not the buyer, not the seller, and not the node. It doesn't mean the node holds no key: its arbiter key is what lets a dispute ruling execute.
+</Note>
 
-Every escrow moves through a well-defined state machine. The happy path is linear; disputes branch off from `PAYMENT_PENDING`.
+## Lifecycle
+
+```text
+CREATED → FUNDS_LOCKED → PAYMENT_PENDING → COMPLETED
+               │                │
+               │                └→ DISPUTED → COMPLETED | REFUNDED | SPLIT
+               ├→ REFUNDED
+               └→ EXPIRED
+```
 
 <Steps>
   <Step title="CREATED">
-    The escrow record is created after both parties agree on terms during negotiation. No funds have moved yet.
+    A party creates the escrow for an agreed trade. For client-held-key providers, buyer and seller each submit an escrow public key; the deposit address appears once both are in.
   </Step>
   <Step title="FUNDS_LOCKED">
-    The seller locks their digital asset into the escrow. Sails holds no custody — the funds are locked by the escrow contract or multisig output directly.
+    The seller funds the escrow and locks it. For on-chain providers the node checks the funding on-chain first.
   </Step>
   <Step title="PAYMENT_PENDING">
-    The buyer marks their fiat payment as sent. Fiat always flows directly between participants — the protocol never touches it. The buyer shares a payment receipt as a Proof via the negotiation channel.
+    The buyer pays off-chain (for example PIX) and marks the payment sent. Fiat never passes through the protocol; proof of payment can be recorded with [OpenProof](/api/proof).
   </Step>
   <Step title="COMPLETED">
-    The seller confirms receipt and signs the release. The escrowed asset settles to the buyer's address. Both parties' reputation scores are updated from this outcome.
+    The seller releases. Funds go to the buyer's **registered payout address** — never to an address supplied at release time.
   </Step>
 </Steps>
 
-<Accordion title="Dispute branch: DISPUTED → RELEASED or REFUNDED">
-  If either party contests the trade at the `PAYMENT_PENDING` stage, the escrow status moves to `DISPUTED`. The Dispute primitive takes over: Policy Engine auto-resolution runs first, then agent-assisted resolution, and finally a Trusted Arbiter if needed. The arbiter issues a ruling — `RELEASE`, `REFUND`, or `SPLIT` — which resolves the dispute back into a terminal Settlement state.
+<Accordion title="Dispute branch">
+  Either party can dispute a locked escrow. An arbiter is assigned; the parties submit evidence; the node may add an advisory automated proposal. Only a `RELEASE`, `REFUND`, or `SPLIT` ruling **signed by the assigned arbiter** executes — the escrow then ends `COMPLETED`, `REFUNDED`, or `SPLIT`. See [Disputes](/guides/disputes).
 </Accordion>
 
-## Standard Escrow Flow
+## Two release paths
 
-The four core settlement methods mirror the escrow lifecycle directly. All methods require an active session from `identity.authenticate()`.
-
-```typescript
-import { SailsClient } from '@satsails/p2p-trading-sdk';
-
-// Create the escrow after terms are agreed in negotiation
-const escrow = await client.settlement.create({
-  tradeId: trade.id,
-  type: 'MULTISIG',        // omit to let the SDK pick based on asset
-  lockedAmount: '0.01',    // decimal string — never a JS number
-  asset: 'BTC',
-});
-
-// Seller locks funds: CREATED → FUNDS_LOCKED
-await client.settlement.lock(escrow.id);
-
-// Buyer marks fiat payment sent: FUNDS_LOCKED → PAYMENT_PENDING
-await client.settlement.markPaymentSent(escrow.id);
-
-// Seller confirms receipt and releases funds: PAYMENT_PENDING → COMPLETED
-await client.settlement.release(escrow.id, buyerPayoutAddress);
-```
-
-If either party needs to raise a dispute, call `settlement.dispute()` from the `PAYMENT_PENDING` state:
+**Direct-call providers** (`MOCK`, `WDK_USDT_EVM`) release in one call:
 
 ```typescript
-// Raise a dispute with a reason and optional evidence
-const dispute = await client.settlement.dispute(
-  escrow.id,
-  'Fiat payment not received after 2 hours',
-);
-console.log('Dispute ID:', dispute.id);
-console.log('Status:', dispute.status); // 'OPENED'
+await client.settlement.release(escrow.id);
 ```
 
-## Client-Held Keys
-
-The `MULTISIG`, `LIGHTNING_HODL`, and `SAFE_GUARD_EVM` providers require you to generate a keypair and submit your public key to the escrow. The private key never leaves your device. When it is time to release or refund, you sign the transaction locally and submit only the signed bytes.
+**Client-held-key providers** (`MULTISIG`, `LIGHTNING_HODL`, `SAFE_GUARD_EVM`) run a signing round: the node builds an unsigned transaction, each required signer signs it on their own device, and it's broadcast when the last signature arrives:
 
 ```typescript
 import { generateEscrowKeypair, signEscrowPsbt } from '@satsails/p2p-trading-sdk';
 
-// Generate a keypair — store the private key securely!
-const { publicKey, privateKey } = generateEscrowKeypair();
+const escrowKey = generateEscrowKeypair();                       // on the device
+await client.settlement.submitKey(escrow.id, escrowKey.publicKeyHex);
 
-// Submit your public key to the escrow
-await client.settlement.submitKey(escrow.id, publicKey);
+// … funded, locked, payment marked sent …
+
+const pending = await client.settlement.initiateRelease(escrow.id);
+const signed = signEscrowPsbt(pending.unsignedPsbtBase64, escrowKey.privateKey);
+const { complete } = await client.settlement.submitTransactionSignature(escrow.id, signed);
 ```
 
-When the seller is ready to release funds, they initiate the release and sign the resulting unsigned PSBT:
-
-```typescript
-// Initiate release — this creates an unsigned transaction, it does not move funds yet
-const pendingTx = await client.settlement.initiateRelease(escrow.id, buyerPayoutAddress);
-
-// Sign the PSBT with your local private key
-const signedPsbt = signEscrowPsbt(pendingTx.unsignedPsbtBase64, privateKey);
-
-// Submit the signature — once all required parties have signed, funds are released
-await client.settlement.submitTransactionSignature(escrow.id, signedPsbt);
-```
-
-You can retrieve the pending transaction at any time before signing:
-
-```typescript
-const pendingTx = await client.settlement.getPendingTransaction(escrow.id);
-```
-
-For `LIGHTNING_HODL` escrows, use `signEscrowArkTx()` instead of `signEscrowPsbt()`. For `SAFE_GUARD_EVM`, use `signEscrowSafeUserOp()`.
+Use `signEscrowArkTx()` for `LIGHTNING_HODL` and `signEscrowSafeUserOp()` for `SAFE_GUARD_EVM`.
 
 <Warning>
-  For `MULTISIG` and `LIGHTNING_HODL` escrows, **you must store your private key yourself**. Sails never receives it. If you lose your private key before an escrow is released, the funds cannot be released without opening a dispute and engaging an arbiter. Treat your escrow keypair with the same care as your wallet seed phrase.
+  Store your escrow private key yourself — the node never receives it. If you lose it before the escrow settles, the funds can only be moved through a dispute and an arbiter's ruling.
 </Warning>
 
-For a complete walkthrough of every escrow state transition — including error handling, reconnection behavior, and the dispute evidence flow — see the [Escrow Lifecycle guide](/guides/escrow-lifecycle).
+## Crash recovery
+
+If a node crashes in the middle of a settlement, a reconciliation process finishes the job from durable state — asking the chain or the provider what actually happened — instead of guessing or paying twice.
+
+See the [Escrow Lifecycle guide](/guides/escrow-lifecycle) for the full walkthrough and the [Settlement API](/api/settlement) for every endpoint.
