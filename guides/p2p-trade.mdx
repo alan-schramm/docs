@@ -1,15 +1,120 @@
 ---
 title: "Execute Your First P2P Trade with Sails Protocol SDK"
 sidebarTitle: "P2P Trade"
-description: "Step-by-step guide to publishing a sell offer, discovering it as a buyer, opening a trade, negotiating, and completing settlement — all non-custodially."
+description: "The full P2P trade flow from each party's side — seller and buyer — with offers, trades, chat, payment proof, escrow, and settlement."
 ---
 
-This guide walks you through a complete P2P BTC/fiat trade using the `@satsails/p2p-trading-sdk`. You'll act as both seller and buyer to understand the full flow — in production, each party uses their own client instance. Sails Protocol never takes custody of funds at any point: every lock, transfer, and release happens directly between you and your counterparty.
+In production, seller and buyer are different users in different apps, each with their own `SailsClient`, identity, and session. They coordinate only through shared IDs (`offer.id`, `trade.id`, `escrow.id`) and the trade channel. This guide shows what each side does, in order.
 
 <Note>
-  In production, seller and buyer run in separate processes and separate wallets — they share only `trade.id` and `escrow.id` to coordinate. Neither party has access to the other's `SailsClient` instance or session token.
+  Custody depends on the settlement provider: client-held-key providers (`MULTISIG`, `LIGHTNING_HODL`, `SAFE_GUARD_EVM`) keep buyer and seller keys on their devices, while `WDK_USDT_EVM` is server-custodial and `MOCK` moves no real funds. See [Escrow Lifecycle](/guides/escrow-lifecycle) before choosing one.
 </Note>
 
-<Tip>
-  The default escrow type is `MOCK` on a local development node. For production non-custodial flows over real Bitcoin — using on-chain multisig (`MULTISIG`) or Lightning HODL invoices (`LIGHTNING_HODL`) — see the [Escrow Lifecycle](/guides/escrow-lifecycle) guide.
-</Tip>
+## 0. Both parties: set up
+
+```typescript
+const client = new SailsClient({ baseUrl: process.env.SAILS_BASE_URL! });
+
+const { participant, keypair } = await client.identity.create(undefined, 'Alice');
+await client.identity.authenticate(keypair);
+
+// Production nodes enforce capability grants — idempotent, run it on every login.
+await client.capabilities.ensureCanonicalGrants(participant.id);
+
+// Releases, refunds, and rulings pay your registered address for the asset.
+await client.settlement.setPayoutAddress({ asset: 'BTC', address: myBtcAddress });
+```
+
+## 1. Seller: publish an offer
+
+```typescript
+const offer = await seller.liquidity.publish({
+  asset: 'BTC',
+  side: 'SELL',
+  priceUsd: '65000',
+  minAmount: '0.001',
+  maxAmount: '0.05',
+  paymentMethod: 'PIX',
+  paymentDetails: 'seller-pix-key', // never exposed by public offer endpoints
+  idempotencyKey: 'offer-2026-09-21-1',
+});
+```
+
+## 2. Buyer: find an offer and open a trade
+
+```typescript
+const { offers } = await buyer.liquidity.discover({ asset: 'BTC', side: 'SELL', paymentMethod: 'PIX' });
+const chosen = offers[0];
+
+// Check the counterparty before trading.
+const detail = await buyer.liquidity.getOffer(chosen.id);
+const trust = await buyer.reputation.get(detail.user.id);
+
+const trade = await buyer.openp2p.trade(chosen.id, '0.01');
+```
+
+Prefer to describe what you want in plain language? See [AI Agents](/guides/ai-agents) for intent drafts and `proposeTrade()`.
+
+## 3. Both: agree on the details in the trade channel
+
+```typescript
+const channel = client.openp2p.chat(trade.id);
+channel.onMessage((msg) => render(msg));
+channel.onEvent((frame) => {
+  if (frame.type === 'ESCROW_STATUS_UPDATE') refreshEscrow();
+  if (frame.type === 'RISK_WARNING') showWarning(frame.payload);
+});
+channel.send({ content: 'Ready — please share payment details.' });
+```
+
+The channel reconnects automatically; after a long disconnection, catch up with `openp2p.reconcileTrade(trade.id, lastSeenAt)`.
+
+## 4. Seller: create and fund the escrow
+
+```typescript
+const escrow = await seller.settlement.create({ tradeId: trade.id, lockedAmount: '0.01', asset: 'BTC' });
+```
+
+For client-held-key providers, both parties submit an escrow key (`submitKey`), the seller funds the deposit address on-chain, then locks. See [Escrow Lifecycle](/guides/escrow-lifecycle#client-held-keys-multisig).
+
+```typescript
+await seller.settlement.lock(escrow.id);
+```
+
+## 5. Buyer: pay off-chain and record it
+
+Pay the seller outside the protocol (PIX, bank transfer, …). Then record proof and mark the payment sent:
+
+```typescript
+const claim = await buyer.proof.assertClaim({
+  claimType: 'payment_sent',
+  assertion: { method: 'PIX', amount: '3500.00', currency: 'BRL' },
+  tradeId: trade.id,
+});
+await buyer.proof.submitProof({ claimId: claim.id, evidence: { endToEndId: 'E0000…' } });
+
+await buyer.settlement.markPaymentSent(escrow.id);
+```
+
+## 6. Seller: confirm receipt and release
+
+Direct-call providers:
+
+```typescript
+await seller.settlement.release(escrow.id); // pays the buyer's registered address
+```
+
+Client-held-key providers run a signing round instead: `initiateRelease()`, then each required signer calls `submitTransactionSignature()` with their own signature. `complete: true` means the release transaction was broadcast.
+
+## 7. Both: rate the trade
+
+```typescript
+await buyer.reputation.rate({ tradeId: trade.id, ratedId: sellerId, score: 5 });
+```
+
+Ratings are informational; the trust score comes from settlement outcomes.
+
+## If something goes wrong
+
+- **Before funds are locked:** cancel by agreement with `openp2p.updateTradeStatus(trade.id, 'CANCELLED')` — always a neutral reputation outcome.
+- **After funds are locked:** open a dispute with `settlement.dispute(escrow.id, reason, evidence)`. See [Disputes](/guides/disputes).

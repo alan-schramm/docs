@@ -34,10 +34,10 @@ Sails uses a cryptographic challenge-response flow to authenticate you. No passw
     The client requests a one-time challenge string tied to your public key.
   </Step>
   <Step title="Sign the challenge">
-    Your client signs the challenge bytes with your Ed25519 private key.
+    Your client signs the challenge string with your Ed25519 private key. Challenges are single-use and expire after a couple of minutes.
   </Step>
   <Step title="Server verifies and returns a session token">
-    The server verifies your signature and returns a session token, which the SDK stores automatically for subsequent requests.
+    The server verifies your signature and returns an opaque session token (valid for an hour by default), which the SDK stores and sends on later requests.
   </Step>
 </Steps>
 
@@ -64,18 +64,19 @@ console.log('Challenge expires in:', expiresIn, 'seconds');
 If your application stores the private key in a hardware wallet or an external signing device, you can register and authenticate without the raw secret key ever touching the SDK. The private key stays inside your wallet at all times.
 
 ```typescript
-// Register with just a public key — private key stays in your wallet
-const participant = await client.identity.createWithPublicKey(
+// Register — the wallet signs the proof of possession; the private key never leaves it
+const participant = await client.identity.createWithWallet(
   walletPublicKeyHex,
+  walletAdapter,
   'My Hardware Wallet'
 );
 
-// Authenticate by signing with the wallet
+// Authenticate by signing the login challenge with the wallet
 await client.identity.authenticateWithWallet(walletPublicKeyHex, walletAdapter);
 // walletAdapter must implement signMessage(message: Uint8Array): Promise<Uint8Array>
 ```
 
-The `walletAdapter` you pass must implement the `WalletAdapter` interface, specifically its `signMessage` method. This works for Ed25519 identity keys, secp256k1 keys, and hardware-backed signers — the interface does not care which.
+The wallet's `signMessage()` must produce an **Ed25519** signature with the key whose public key you registered — that's what the node verifies. Hardware-backed signers work as long as they sign Ed25519. (`createWithPublicKey()` is deprecated: a bare public key can't prove possession.)
 
 ## Fetching Participant Profiles
 
@@ -85,7 +86,9 @@ You can look up any participant's public profile by their ID, or fetch your own 
 // Fetch any participant's public profile
 const seller = await client.identity.get('participant-id-here');
 console.log('Display Name:', seller.displayName);
-console.log('Verification Level:', seller.verificationLevel); // 0, 1, or 2
+console.log('Verified:', seller.verified); // boolean
+// The public view is limited to id, publicKey, displayName, peerId, and verified.
+// Use reputation.get(id) for trust facts.
 
 // Fetch your own profile (requires an active session)
 const me = await client.identity.me();

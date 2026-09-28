@@ -1,97 +1,82 @@
 ---
 title: "AI-Assisted P2P Trading with On-Device QVAC Agents"
 sidebarTitle: "AI Agents"
-description: "Use Sails Protocol's on-device QVAC AI to generate trade intents from natural language, assess risk, and detect social engineering — no cloud required."
+description: "Use Sails Protocol's on-device QVAC AI to draft trade and offer intents from plain language, assess risk, find matching offers within your limits, and flag social-engineering patterns in chat."
 ---
 
-Sails Protocol's OpenAgents module integrates QVAC — Tether's on-device LLM — for AI-assisted trading. All inference runs locally on your device; no data is sent to external AI providers. This keeps your trading activity private and means the AI works even when you're offline or on a restricted network.
+Sails integrates QVAC — Tether's local AI runtime — for AI-assisted trading. Inference runs on the Sails node with a small local model (Llama 3.2 1B, llama.cpp); no cloud AI provider is involved.
 
-<Note>
-  QVAC requires the Sails node to have QVAC configured (`qvac-agent.provider.ts` with a local llama.cpp model). The `agents.*` endpoints return a `SailsNotImplementedError` if QVAC is not available on the node. Check with your node operator before building features that depend on these endpoints.
-</Note>
+## What the AI does — and doesn't
 
-## Generate a Trade Intent from Text
+| Does | How |
+| --- | --- |
+| Draft a structured trade intent from a goal | `agents.generateTradeIntent(goal)` — one model call |
+| Draft a structured offer from a goal | `agents.generateOfferIntent(goal)` — one model call |
+| Assess the risk of an intent's shape | `agents.assessIntentRisk(intent)` — one model call |
+| Flag possible social engineering in trade chat | `RISK_WARNING` events, when the node enables it |
+| Propose an advisory dispute ruling | Only when the node enables it — never executes on its own (see [Disputes](/guides/disputes)) |
 
-Instead of manually constructing a trade intent payload, describe your goal in plain language and let QVAC produce the structured intent for you. The returned object maps directly onto the parameters `createIntent()` expects.
+It does **not** negotiate with your counterparty, hold state between calls, or act on your behalf. Finding a matching offer for an intent (`proposeTrade`) is deterministic matching against your declared limits, not a model call. Every output is a draft or advice you review.
+
+## Draft a trade intent
 
 ```typescript
-const intent = await client.agents.generateTradeIntent({
-  goal: 'I want to buy 0.01 BTC using PIX, max price $46,000',
-});
-console.log('Generated intent:', intent);
-// { side: 'BUY', asset: 'BTC', amount: '0.01', maxPriceUsd: '46000', paymentMethod: 'PIX' }
+const draft = await client.agents.generateTradeIntent('Buy 0.01 BTC using PIX, max R$ 3,500');
+// { asset: 'BTC', side: 'BUY', maxValue: '3500', minValue: '…', currency: 'BRL', fiatMethod: 'PIX' }
 
-// Use the generated payload directly
-const created = await client.createIntent('TradeIntent', intent);
+// Review and adjust, then create the intent.
+const intent = await client.createIntent('TradeIntent', { ...draft, maxPriceUsd: '66000' });
 ```
 
-QVAC parses the natural-language goal and outputs a `GeneratedTradeIntent` with fields for `asset`, `side`, `maxValue`, `minValue`, `currency`, and `fiatMethod`. You can inspect and edit the output before passing it to `createIntent()` — treat the AI output as a helpful starting point, not a binding action.
-
-## Generate an Offer Intent
-
-Sellers can use the same approach to describe an offer in plain language. QVAC returns a `GeneratedOfferIntent` ready to pass to `liquidity.publish()`.
+## Find a matching offer for the intent
 
 ```typescript
-const offerIntent = await client.agents.generateOfferIntent({
-  goal: 'Sell up to 1 BTC at market rate, accepting bank transfer',
-});
-```
+const { proposal, counterProposal } = await client.proposeTradeOutcome(intent.id, '0.01');
 
-The response includes fields for `asset`, `side`, `minAmount`, `maxAmount`, and `paymentMethod` — the same shape `liquidity.publish()` accepts.
-
-## Risk Assessment
-
-Before executing a trade with an unfamiliar counterparty, run the intent through QVAC's risk assessment. This produces a human-readable evaluation with a risk level, reasoning, and a specific recommendation — entirely on-device, with no data leaving your machine.
-
-```typescript
-const assessment = await client.agents.assessIntentRisk(intent);
-console.log('Risk level:', assessment.risk);         // LOW | MEDIUM | HIGH
-console.log('Reasoning:', assessment.reasoning);
-console.log('Recommendation:', assessment.recommendation);
-```
-
-<Tip>
-  Use `agents.assessIntentRisk()` before executing any trade with a new counterparty. A `HIGH` risk assessment doesn't automatically block anything — the recommendation is advisory, and you decide whether to proceed.
-</Tip>
-
-The risk assessment reads the same intent fields you'd pass to `createIntent()`. You can call it before committing to a trade, making it a lightweight pre-flight check that costs nothing beyond the local inference time.
-
-## Social Engineering Detection
-
-QVAC can monitor the negotiation chat channel for known fraud patterns — unexpected requests to move communication off-platform, last-minute payment instruction changes, urgency manipulation, and other configurable signals. This feature is off by default and must be enabled by the node operator (`SOCIAL_ENGINEERING_DETECTION=true`).
-
-When enabled, the WebSocket channel emits `RISK_WARNING` events alongside normal chat messages. Subscribe to these events in your channel handler:
-
-```typescript
-const channel = client.openp2p.chat(trade.id);
-channel.onEvent((event) => {
-  if (event.type === 'RISK_WARNING') {
-    console.warn('Potential fraud detected:', event.payload.warning);
-  }
-});
-```
-
-<Note>
-  The Social Engineering Agent is detection-only — it never blocks, modifies, or delays a message. It emits a `RISK_WARNING` event that your UI can surface to the user; the user decides how to respond. This design is a protocol invariant: an agent behavior must never act unilaterally.
-</Note>
-
-## Agent Rate Limits
-
-All three `agents.*` endpoints require an active session and share the node's critical-tier rate limit because each call runs real local LLM inference — a meaningfully more expensive operation than a standard read or write. If you hit a `429`, catch the `SailsRateLimitError` specifically and back off before retrying:
-
-```typescript
-import { SailsRateLimitError } from '@satsails/p2p-trading-sdk';
-
-try {
-  const assessment = await client.agents.assessIntentRisk(intent);
-} catch (err) {
-  if (err instanceof SailsRateLimitError) {
-    // Back off and retry after the window resets
-    console.warn('Rate limited — back off before retrying agent calls');
-  } else {
-    throw err;
-  }
+if (proposal) {
+  // An offer within every limit you declared. Nothing is opened until you approve:
+  await client.openp2p.trade(proposal.offerId, '0.01');
+} else if (counterProposal) {
+  // Only price missed: suggestedPriceUsd is your own declared bound.
+  console.log(counterProposal.reasoning);
 }
 ```
 
-Unlike GET requests, mutating calls (including all `agents.*` POST endpoints) are never automatically retried by the SDK — you control the retry logic.
+`proposeTrade()` returns just the proposal (or `null`). Neither call opens a trade or touches escrow.
+
+## Draft an offer
+
+```typescript
+const draftOffer = await client.agents.generateOfferIntent('Sell up to 1 BTC accepting bank transfer');
+// { asset: 'BTC', side: 'SELL', minAmount: '0.001', maxAmount: '1', paymentMethod: 'BANK_TRANSFER' }
+
+await client.liquidity.publish({ ...draftOffer, priceUsd: '65000' });
+```
+
+## Assess risk
+
+```typescript
+const assessment = await client.agents.assessIntentRisk({
+  asset: 'BTC', side: 'BUY', maxValue: '500', currency: 'USD', fiatMethod: 'PIX',
+});
+// { risk: 'low' | 'medium' | 'high', reasoning: '…', recommendation: 'proceed' | 'hold' | 'reject' }
+```
+
+The assessment looks only at the intent you pass — not at a counterparty's reputation or history (use `reputation.get()` for that). It's advice from a small local model; it never blocks anything.
+
+## Social-engineering warnings
+
+When the node operator enables detection (`SOCIAL_ENGINEERING_DETECTION=true`), trade chat can carry `RISK_WARNING` events for patterns like requests to move the conversation elsewhere or sudden changes to payment details:
+
+```typescript
+const channel = client.openp2p.chat(trade.id);
+channel.onEvent((frame) => {
+  if (frame.type === 'RISK_WARNING') showWarning(frame.payload);
+});
+```
+
+Detection only: messages are never blocked, changed, or delayed. Your user decides what to do.
+
+## Availability and limits
+
+Agent calls need a session, and the node must have its local model available. Each call runs real inference, so they share a stricter rate limit. On a `429`, the SDK throws `SailsRateLimitError`; agent calls are `POST` requests, so the SDK never retries them automatically — back off and retry yourself.

@@ -19,22 +19,22 @@ Sails Protocol is built from nine composable primitives. Every financial transac
     **WHO ELSE this could happen with.** Discovery matches Intents with available offers and counterparties via P2P (HyperDHT) or an order book, without any central authority owning the matching process.
   </Card>
   <Card title="Negotiation" icon="comments" href="/concepts/protocol-primitives">
-    **HOW terms get agreed.** Two or more identities reach mutual agreement through a sequence of structured state transitions — offer, counter-offer, accept — over an E2E encrypted channel. Human chat and agent-to-agent negotiation both use the same primitive.
+    **HOW terms get agreed.** Two identities reach agreement over a trade channel. Today that's a real-time chat channel relayed by the node (`openp2p.chat()`); structured offer/counter-offer negotiation and agent-to-agent negotiation are part of the protocol design but not implemented yet.
   </Card>
   <Card title="Settlement" icon="lock" href="/concepts/settlement">
-    **HOW value actually moves.** Pluggable escrow and multi-sig mechanisms lock and release funds according to agreed terms. Sails never takes custody — every provider enforces a non-custodial guarantee.
+    **HOW value actually moves.** Pluggable settlement providers lock and release funds according to agreed terms. Custody depends on the provider: client-held-key providers need two of three keys to move funds, while `WDK_USDT_EVM` is a disclosed server-custodial reference implementation.
   </Card>
   <Card title="Reputation" icon="star" href="/concepts/reputation">
-    **WHY to trust a counterparty.** An outcome-based trust score (0–100) is computed from real trade history and tied cryptographically to an Identity — not to any platform, app, or email address.
+    **WHY to trust a counterparty.** An outcome-based trust score computed from real settlement outcomes and tied to an Identity — not to any platform, app, or email address. Ratings never move it.
   </Card>
   <Card title="Agent" icon="robot" href="/concepts/protocol-primitives">
-    **WHO (or what) acts on someone's behalf.** On-device AI (QVAC) can generate intents, assess risk, detect fraud patterns, and automate negotiation — always within explicit, delegated permission boundaries. An Agent never holds its own signing key.
+    **WHO (or what) assists a participant.** Local AI (QVAC) drafts intents and offers, assesses risk, flags social-engineering patterns, and can propose advisory dispute rulings. It never negotiates, signs, or moves funds on anyone's behalf.
   </Card>
   <Card title="Proof" icon="shield-check" href="/concepts/protocol-primitives">
     **HOW a claim gets verified.** A structured `Claim → Proof → Verification` chain represents verifiable assertions for off-chain events — payment receipts, collateral proofs, delivery confirmations — in a single consistent format any module can consume.
   </Card>
   <Card title="Dispute" icon="gavel" href="/concepts/protocol-primitives">
-    **HOW a disagreement gets formally resolved.** A structured escalation path — Policy Engine → Agents → Trusted Arbiters → Resolution — is triggered when the happy path breaks down. A resolved dispute always produces a Settlement outcome: release, refund, or split.
+    **HOW a disagreement gets formally resolved.** An assigned arbiter reviews both parties' evidence (optionally alongside an advisory AI proposal) and issues a ruling signed with their own key. A resolved dispute always produces a Settlement outcome: release, refund, or split.
   </Card>
 </CardGroup>
 
@@ -44,28 +44,28 @@ The following walkthrough shows how the nine primitives chain together in a typi
 
 <Steps>
   <Step title="Seller establishes Identity and publishes an offer">
-    The seller creates an Ed25519 Identity and publishes a sell offer via the **Discovery** primitive (OpenLiquidity). The offer is broadcast to the P2P network and becomes discoverable by potential buyers.
+    The seller creates an Ed25519 Identity and publishes a sell offer via the **Discovery** primitive (OpenLiquidity). The offer lands in the node's offer book, and can optionally be broadcast to connected peers over HyperDHT.
   </Step>
   <Step title="Buyer expresses a TradeIntent">
     The buyer creates a `TradeIntent` — "BUY 0.01 BTC, max $46,000, via PIX" — through the **Intent** primitive. The Intent Engine routes it to the Discovery layer.
   </Step>
-  <Step title="Parties Negotiate via an encrypted channel">
-    Discovery ranks available offers and surfaces the best match. The two parties open a **Negotiation** channel (E2E encrypted via Secretstream). They exchange offers, counter-offers, and fiat payment details until terms are agreed.
+  <Step title="Parties agree on the details">
+    Discovery finds offers within the Intent's limits and surfaces a match for the buyer to approve. The two parties open the trade's **Negotiation** channel and agree on the payment details.
   </Step>
   <Step title="Settlement escrow is created and locked">
-    With terms agreed, the **Settlement** primitive creates an escrow (e.g. Bitcoin multisig). The seller locks their BTC into the escrow — Sails never holds these funds.
+    With terms agreed, the **Settlement** primitive creates an escrow (e.g. a 2-of-3 Bitcoin multisig). The seller funds and locks it; buyer and seller keys stay on their own devices.
   </Step>
   <Step title="Buyer submits payment Proof">
-    The buyer sends fiat directly to the seller (peer-to-peer, outside the protocol) and shares a **Proof** — a `payment_sent` Claim with a payment receipt as evidence — via the negotiation channel.
+    The buyer sends fiat directly to the seller (outside the protocol) and records a **Proof** — a `payment_sent` Claim with the payment receipt as evidence — then marks the payment as sent.
   </Step>
   <Step title="Escrow is released — Reputation updated">
     The seller confirms receipt and signs the escrow release. The BTC settles to the buyer's wallet. Both parties' **Reputation** scores are updated automatically from the trade outcome.
   </Step>
   <Step title="If contested: Dispute process begins">
-    If either party disputes the outcome, the **Dispute** primitive is triggered. The escalation order runs: Policy Engine auto-resolution → Agent-assisted resolution → Trusted Arbiter ruling. The dispute always resolves back into a Settlement state transition.
+    If either party disputes the outcome, the **Dispute** primitive is triggered: an arbiter is assigned, both parties submit evidence, and the arbiter's signed ruling resolves back into a Settlement state transition.
   </Step>
 </Steps>
 
 <Note>
-  Two additional components — the **Capability Registry** and the **Policy/Rules Engine** — work across all nine primitives without being primitives themselves. The Capability Registry enforces what each participant and agent is allowed to do. The Policy Engine applies configurable rules (fee rates, trust limits, routing weights) that govern how primitives behave. Neither has its own participant-facing lifecycle, which is why they are Core components rather than a tenth and eleventh primitive.
+  Two additional components — the **Capability Registry** and the **Policy/Rules Engine** — work across all nine primitives without being primitives themselves. The Capability Registry records what each participant has consented to (for example creating intents or moving escrow funds), and production nodes enforce it. The Policy Engine applies rules that govern how primitives behave. Neither has its own participant-facing lifecycle, which is why they are Core components rather than a tenth and eleventh primitive.
 </Note>

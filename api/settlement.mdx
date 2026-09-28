@@ -1,811 +1,311 @@
 ---
 title: "OpenSettlement API: Escrow, Disputes, and Arbitration"
 sidebarTitle: "Settlement"
-description: "REST endpoints for creating and managing escrow, submitting signatures for non-custodial providers, and handling trade disputes and arbitration."
+description: "REST endpoints for the escrow lifecycle, client-held-key signature collection, disputes with signed rulings, arbitration, payout addresses, and payment accounts."
 ---
 
-The OpenSettlement API manages the custody-free transfer of value in Sails Protocol. When a trade agreement is reached, OpenSettlement locks the seller's asset in escrow — without the protocol ever taking custody — and coordinates the release to the buyer once fiat payment is confirmed. For non-custodial settlement types (`MULTISIG`, `LIGHTNING_HODL`, `SAFE_GUARD_EVM`), both parties hold their own cryptographic keys and submit independent signatures; no single party or server can unilaterally move funds. When things go wrong, the dispute and arbitration endpoints provide a structured escalation path from automated resolution through a trusted human arbitrator.
+OpenSettlement moves the value of a trade. It locks the seller's asset in escrow, coordinates release to the buyer (or refund to the seller), and runs disputes when a trade breaks down. For client-held-key providers (`MULTISIG`, `LIGHTNING_HODL`, `SAFE_GUARD_EVM`), buyer and seller each hold their own key and sign independently — the node coordinates signature collection but can't move funds on its own.
 
-<Note>
-  All monetary amounts are **decimal strings**, never numbers (RFC-009). Authenticated endpoints require `Authorization: Bearer <token>` — see [Identity](/api/identity).
-</Note>
+Every endpoint on this page requires a session unless marked otherwise. Amounts are decimal strings.
 
----
-
-## Escrow Lifecycle
-
-The standard escrow lifecycle follows these states:
+## Escrow lifecycle
 
 ```text
 CREATED → FUNDS_LOCKED → PAYMENT_PENDING → COMPLETED
-                                          ↘ DISPUTED → RESOLVED
-                         ↘ REFUNDED
+               │                │
+               │                └→ DISPUTED → COMPLETED | REFUNDED | SPLIT (by ruling)
+               ├→ REFUNDED
+               └→ EXPIRED (client-held-key providers: timelock passed before payment;
+                           the seller recovers through arbitration)
 ```
 
-For `MULTISIG`, `LIGHTNING_HODL`, and `SAFE_GUARD_EVM` escrows, release and refund go through a multi-signature collection flow instead of the direct `/release` and `/refund` routes. See [Multi-Sig Flows](#multi-sig-flows) below.
+| Method | Path | Who | Description |
+| --- | --- | --- | --- |
+| POST | `/v1/settlement/escrow` | Buyer or seller | Create an escrow for a trade |
+| GET | `/v1/settlement/escrow/:id` | Party or assigned arbiter | Escrow detail |
+| POST | `/v1/settlement/escrow/:id/submit-key` | Buyer or seller | Submit your client-generated escrow public key |
+| POST | `/v1/settlement/escrow/:id/lock` | Seller | `CREATED → FUNDS_LOCKED` |
+| POST | `/v1/settlement/escrow/:id/payment-sent` | Buyer | `FUNDS_LOCKED → PAYMENT_PENDING` |
+| POST | `/v1/settlement/escrow/:id/release` | Party | Release (direct-call providers only) |
+| POST | `/v1/settlement/escrow/:id/refund` | Party | Refund (direct-call providers only) |
+| POST | `/v1/settlement/escrow/:id/initiate-release` | Party | Start a release signing round (client-held-key providers) |
+| POST | `/v1/settlement/escrow/:id/initiate-refund` | Party | Start a refund signing round (client-held-key providers) |
+| POST | `/v1/settlement/escrow/:id/submit-transaction-signature` | Required signer | Submit your signature for the round |
+| GET | `/v1/settlement/escrow/:id/pending-transaction` | Party or assigned arbiter | The round in progress |
+| POST | `/v1/settlement/escrow/:id/approve-release` | Buyer or seller | Two-person approval (when enabled) |
+| GET | `/v1/settlement/escrow/:id/release-approvals` | Party or assigned arbiter | Recorded approvals |
+| POST | `/v1/settlement/escrow/:id/dispute` | Party | Open a dispute |
+| POST | `/v1/settlement/escrow/:id/initiate-expiry-recovery` | Seller | Recover an `EXPIRED` escrow through arbitration |
 
 ---
 
-### Create Escrow
+## Create an escrow
 
 **`POST /v1/settlement/escrow`**
 
-Create an escrow record for an active trade. The escrow type determines which settlement provider handles the locking and release of funds. If `type` is omitted, the node defaults to `MOCK`.
-
 <ParamField body="tradeId" type="string" required>
-  The trade ID this escrow is being created for.
+  The trade this escrow secures. You must be its buyer or seller.
 </ParamField>
 
 <ParamField body="lockedAmount" type="string" required>
-  The amount to lock in escrow, as a decimal string (e.g. `"0.01"`). Must match the agreed trade amount.
+  Amount to lock, as a positive decimal string.
 </ParamField>
 
 <ParamField body="asset" type="string" required>
-  The asset being locked (e.g. `"BTC"`, `"USDT"`).
+  Asset being locked (for example `BTC`, `USDT_ERC20`).
 </ParamField>
 
 <ParamField body="type" type="string">
-  Settlement provider type: `MOCK`, `MULTISIG`, `LIGHTNING_HODL`, `WDK_USDT_EVM`, or `SAFE_GUARD_EVM`. Defaults to `MOCK` when omitted.
+  Provider: `MULTISIG`, `LIGHTNING_HODL`, `WDK_USDT_EVM`, `SAFE_GUARD_EVM`, or `MOCK`. If omitted, the node picks the implementation registered for the asset (`MOCK` only when the node runs in mock-escrow mode). `LIQUID_COVENANT` is reserved and not implemented.
 </ParamField>
 
-<CodeGroup>
-```bash Request
-curl -X POST https://your-node.example.com/v1/settlement/escrow \
-  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..." \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tradeId": "trade_xyz789",
-    "lockedAmount": "0.01",
-    "asset": "BTC",
-    "type": "MULTISIG"
-  }'
-```
+<ParamField body="network" type="string">
+  Optional network override.
+</ParamField>
 
-```json Response
-{
-  "success": true,
-  "data": {
-    "id": "escrow_abc123",
-    "tradeId": "trade_xyz789",
-    "type": "MULTISIG",
-    "status": "CREATED",
-    "lockedAmount": "0.001",
-    "asset": "BTC",
-    "createdAt": "2025-01-15T10:00:00Z",
-    "events": [
-      { "type": "CREATED", "timestamp": "2025-01-15T10:00:00Z" }
-    ]
-  }
-}
-```
-</CodeGroup>
+<ParamField body="timelockHours" type="number">
+  Optional timelock before an unpaid escrow can expire.
+</ParamField>
+
+Returns `201` with the escrow.
 
 ---
 
-### Get Escrow Details
+## Get an escrow
 
 **`GET /v1/settlement/escrow/:id`**
 
-Retrieve the full escrow record, including its status, locked amount, event history, and any associated dispute. This endpoint is public — no authentication required.
+Returns the escrow, its event history, and:
 
-<ParamField path="id" type="string" required>
-  The escrow ID (e.g. `escrow_abc123`).
+- `disputes` — any dispute on this trade. This is how the party who didn't open a dispute learns its ID.
+- `custodyModel` — the provider's disclosed key-custody model, for example `client-held-buyer-seller-keys-server-held-arbiter` (`MULTISIG`, `LIGHTNING_HODL`), `client-held-buyer-seller-keys-server-held-kms-arbiter` (`SAFE_GUARD_EVM`), or `server-custodial-reference-implementation` (`WDK_USDT_EVM`). `null` for `MOCK`.
+- `distributionPolicyFreezes` — for escrows with a protocol fee, the fee-distribution policy that was frozen when each fee collection was confirmed.
+
+Returns `403` unless you are the buyer, the seller, or the dispute's assigned arbiter.
+
+---
+
+## Submit your escrow key
+
+**`POST /v1/settlement/escrow/:id/submit-key`** — `MULTISIG`, `LIGHTNING_HODL`, `SAFE_GUARD_EVM`
+
+Buyer and seller each submit their own public key, generated client-side with the SDK's `generateEscrowKeypair()`. Once both are in, the node derives the escrow's deposit address.
+
+<ParamField body="pubkey" type="string" required>
+  33-byte compressed secp256k1 public key, hex-encoded (starts with `02` or `03`). Never reuse your identity key.
 </ParamField>
 
-<CodeGroup>
-```bash Request
-curl https://your-node.example.com/v1/settlement/escrow/escrow_abc123
-```
-
-```json Response
-{
-  "success": true,
-  "data": {
-    "id": "escrow_abc123",
-    "tradeId": "trade_xyz789",
-    "type": "MULTISIG",
-    "status": "FUNDS_LOCKED",
-    "lockedAmount": "0.001",
-    "asset": "BTC",
-    "createdAt": "2025-01-15T10:00:00Z",
-    "events": [
-      { "type": "CREATED", "timestamp": "2025-01-15T10:00:00Z" },
-      { "type": "FUNDS_LOCKED", "timestamp": "2025-01-15T10:05:00Z" }
-    ],
-    "disputes": []
-  }
-}
-```
-</CodeGroup>
-
-<Note>
-  The `disputes` array is the only way a trade party who did not open a dispute can discover its `disputeId`. If you are the dispute opener, the `disputeId` is also returned directly from `POST /v1/settlement/escrow/:id/dispute`.
-</Note>
-
----
-
-### Submit Client Public Key
-
-**`POST /v1/settlement/escrow/:id/submit-key`**
-
-For `MULTISIG`, `LIGHTNING_HODL`, and `SAFE_GUARD_EVM` escrows, both buyer and seller must each submit their own independently generated public key. Once both keys are on file, the escrow's deposit address (or Safe address) is derived and stored. Generate your keypair client-side using `generateEscrowKeypair()` from `@satsails/p2p-trading-sdk`.
-
-<ParamField path="id" type="string" required>
-  The escrow ID.
+<ParamField body="capabilityProfile" type="string">
+  Optional signer capability profile, for providers that check it.
 </ParamField>
 
-<ParamField body="publicKeyHex" type="string" required>
-  Your role-specific escrow public key, hex-encoded. Generated client-side — never reuse your identity keypair here.
-</ParamField>
-
-<CodeGroup>
-```bash Request
-curl -X POST https://your-node.example.com/v1/settlement/escrow/escrow_abc123/submit-key \
-  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..." \
-  -H "Content-Type: application/json" \
-  -d '{ "publicKeyHex": "03a1b2c3d4e5f6..." }'
-```
-
-```json Response
-{
-  "success": true,
-  "data": {
-    "id": "escrow_abc123",
-    "status": "CREATED",
-    "keysSubmitted": { "buyer": true, "seller": false },
-    "multisigAddr": null
-  }
-}
-```
-</CodeGroup>
+Returns `{ escrow, buyerKeySubmitted, sellerKeySubmitted }`. Idempotent per role.
 
 ---
 
-### Lock Funds
+## Lock, mark payment sent
 
-**`POST /v1/settlement/escrow/:id/lock`**
+**`POST /v1/settlement/escrow/:id/lock`** — seller only. Moves `CREATED → FUNDS_LOCKED` once the provider confirms the funds are locked.
 
-Transition the escrow from `CREATED` to `FUNDS_LOCKED`. The seller's asset is locked at this point. For non-custodial providers, both parties must have submitted their keys first.
-
-<CodeGroup>
-```bash Request
-curl -X POST https://your-node.example.com/v1/settlement/escrow/escrow_abc123/lock \
-  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..."
-```
-
-```json Response
-{
-  "success": true,
-  "data": {
-    "id": "escrow_abc123",
-    "status": "FUNDS_LOCKED",
-    "events": [
-      { "type": "CREATED", "timestamp": "2025-01-15T10:00:00Z" },
-      { "type": "FUNDS_LOCKED", "timestamp": "2025-01-15T10:05:00Z" }
-    ]
-  }
-}
-```
-</CodeGroup>
+**`POST /v1/settlement/escrow/:id/payment-sent`** — buyer only. Moves `FUNDS_LOCKED → PAYMENT_PENDING` after you've sent the off-chain payment (for example PIX). Share proof over the trade channel.
 
 ---
 
-### Mark Payment as Sent
+## Release and refund (direct-call providers)
 
-**`POST /v1/settlement/escrow/:id/payment-sent`**
+**`POST /v1/settlement/escrow/:id/release`** and **`POST /v1/settlement/escrow/:id/refund`**
 
-Transition the escrow from `FUNDS_LOCKED` to `PAYMENT_PENDING`. The buyer calls this after sending fiat payment to the seller out-of-band (e.g. via PIX, SEPA, or wire transfer). Proof of payment should be shared over the trade's negotiation channel.
-
-<CodeGroup>
-```bash Request
-curl -X POST https://your-node.example.com/v1/settlement/escrow/escrow_abc123/payment-sent \
-  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..."
-```
-
-```json Response
-{
-  "success": true,
-  "data": {
-    "id": "escrow_abc123",
-    "status": "PAYMENT_PENDING"
-  }
-}
-```
-</CodeGroup>
-
----
-
-### Release Funds to Buyer
-
-**`POST /v1/settlement/escrow/:id/release`**
-
-For `MOCK` and `WDK_USDT_EVM` escrows: transition from `PAYMENT_PENDING` to `COMPLETED`, releasing the locked asset to the buyer. Provide a `toAddress` or pre-register one via `POST /v1/settlement/payout-addresses`.
+For `MOCK` and `WDK_USDT_EVM`. Release pays out to the **buyer's registered payout address** for the escrow's asset (see [Payout addresses](#payout-addresses)). A `toAddress` in the body is accepted for compatibility but ignored — the destination always comes from the registered address.
 
 <Warning>
-  `MULTISIG`, `LIGHTNING_HODL`, and `SAFE_GUARD_EVM` escrows **reject this route**. For those types, use the [multi-sig initiate-release flow](#initiate-release) below — buyer and seller keys are client-held and funds can only move with both parties' signatures.
+  `MULTISIG`, `LIGHTNING_HODL`, and `SAFE_GUARD_EVM` reject these routes. Their keys are client-held, so funds only move through the [signing round](#signing-rounds) with the required signatures.
 </Warning>
 
-<ParamField path="id" type="string" required>
-  The escrow ID.
-</ParamField>
-
-<ParamField body="toAddress" type="string">
-  The destination address for the released funds. If omitted, the buyer's registered payout address for this asset is used. Returns an error if neither is available.
-</ParamField>
-
-<CodeGroup>
-```bash Request
-curl -X POST https://your-node.example.com/v1/settlement/escrow/escrow_abc123/release \
-  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..." \
-  -H "Content-Type: application/json" \
-  -d '{ "toAddress": "tb1q..." }'
-```
-
-```json Response
-{
-  "success": true,
-  "data": {
-    "id": "escrow_abc123",
-    "status": "COMPLETED",
-    "txReleaseId": "txid_abc...",
-    "events": [
-      { "type": "CREATED", "timestamp": "2025-01-15T10:00:00Z" },
-      { "type": "FUNDS_LOCKED", "timestamp": "2025-01-15T10:05:00Z" },
-      { "type": "PAYMENT_PENDING", "timestamp": "2025-01-15T10:20:00Z" },
-      { "type": "COMPLETED", "timestamp": "2025-01-15T10:35:00Z" }
-    ]
-  }
-}
-```
-</CodeGroup>
-
 ---
 
-### Refund Seller
+## Signing rounds
 
-**`POST /v1/settlement/escrow/:id/refund`**
+For client-held-key providers, release and refund are two steps: build an unsigned transaction, then collect the required signatures.
 
-Return locked funds to the seller. Use this when a trade is cancelled after funds have been locked but before payment is sent. For `MULTISIG`, `LIGHTNING_HODL`, and `SAFE_GUARD_EVM`, use the [initiate-refund flow](#initiate-refund) instead.
+### Start a round
 
-<CodeGroup>
-```bash Request
-curl -X POST https://your-node.example.com/v1/settlement/escrow/escrow_abc123/refund \
-  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..."
-```
+**`POST /v1/settlement/escrow/:id/initiate-release`** and **`POST /v1/settlement/escrow/:id/initiate-refund`**
 
-```json Response
-{
-  "success": true,
-  "data": {
-    "id": "escrow_abc123",
-    "status": "REFUNDED"
-  }
-}
-```
-</CodeGroup>
+Builds the unsigned transaction and returns the pending transaction (`201`). It doesn't move funds or change the escrow's status. The release destination is the buyer's registered payout address, fixed when the round starts — a later change to that address doesn't affect a round already in progress. A `toAddress` in the body is ignored.
 
----
+The response includes `kind`, `requiredSigners` (the participant IDs that must sign), and `unsignedPsbtBase64` — the payload to sign:
 
-## Multi-Sig Flows
+| Provider | Payload |
+| --- | --- |
+| `MULTISIG` | A PSBT (base64) |
+| `LIGHTNING_HODL` | A JSON bundle of Ark transaction PSBTs |
+| `SAFE_GUARD_EVM` | A JSON bundle with an ERC-4337 user operation and its `userOpHash` |
 
-For `MULTISIG`, `LIGHTNING_HODL`, and `SAFE_GUARD_EVM` escrow types, both parties hold independent cryptographic keys and must both sign any release or refund transaction. The server coordinates signature collection but can never move funds unilaterally.
+Only one round can be in flight per escrow. On a disputed release the arbiter's signature is already embedded, so only one party needs to sign.
 
-### Initiate Release
-
-**`POST /v1/settlement/escrow/:id/initiate-release`**
-
-Build an unsigned release transaction and begin the signature collection round. After this call, each required signer must submit their own signature via `submit-transaction-signature`.
-
-<ParamField path="id" type="string" required>
-  The escrow ID.
-</ParamField>
-
-<ParamField body="toAddress" type="string">
-  Destination address for the released asset. Accepts a bech32 address (`MULTISIG`), raw script hex (`LIGHTNING_HODL`), or `0x`-prefixed Ethereum address (`SAFE_GUARD_EVM`). Falls back to the buyer's registered payout address if omitted.
-</ParamField>
-
-<CodeGroup>
-```bash Request
-curl -X POST https://your-node.example.com/v1/settlement/escrow/escrow_abc123/initiate-release \
-  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..." \
-  -H "Content-Type: application/json" \
-  -d '{ "toAddress": "tb1q..." }'
-```
-
-```json Response
-{
-  "success": true,
-  "data": {
-    "escrowId": "escrow_abc123",
-    "pendingTransactionId": "ptx_001",
-    "requiredSigners": ["part_abc123", "part_xyz"],
-    "signaturesCollected": 0,
-    "signaturesRequired": 2
-  }
-}
-```
-</CodeGroup>
-
----
-
-### Initiate Refund
-
-**`POST /v1/settlement/escrow/:id/initiate-refund`**
-
-Mirror of initiate-release, but builds an unsigned refund transaction returning funds to the seller. For `SAFE_GUARD_EVM`, the seller's destination address is derived automatically from their submitted public key.
-
-<CodeGroup>
-```bash Request
-curl -X POST https://your-node.example.com/v1/settlement/escrow/escrow_abc123/initiate-refund \
-  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..."
-```
-
-```json Response
-{
-  "success": true,
-  "data": {
-    "escrowId": "escrow_abc123",
-    "pendingTransactionId": "ptx_002",
-    "requiredSigners": ["part_abc123", "part_xyz"],
-    "signaturesCollected": 0,
-    "signaturesRequired": 2
-  }
-}
-```
-</CodeGroup>
-
----
-
-### Submit Transaction Signature
+### Submit your signature
 
 **`POST /v1/settlement/escrow/:id/submit-transaction-signature`**
 
-Submit your own independently-signed copy of the pending transaction payload. Sign client-side using the Sails SDK:
-- `MULTISIG`: use `signEscrowPsbt()` — submit the result as `signedPsbtBase64`
-- `LIGHTNING_HODL`: use `signEscrowArkTx()` — submit as `signedPsbtBase64`
-- `SAFE_GUARD_EVM`: submit a bare `0x`-prefixed 65-byte ECDSA hex signature over the `userOpHash` in the `signedPsbtBase64` field
-
-Once every required signer has submitted, the server finalizes the transaction and the escrow transitions to `COMPLETED` or `REFUNDED`.
-
-<ParamField path="id" type="string" required>
-  The escrow ID.
-</ParamField>
-
 <ParamField body="signedPsbtBase64" type="string" required>
-  Your signed transaction payload. For `MULTISIG`/`LIGHTNING_HODL`, a base64-encoded PSBT. For `SAFE_GUARD_EVM`, a `0x`-prefixed hex ECDSA signature — the field name is the same across all types.
+  Your signed copy of the payload: sign with `signEscrowPsbt()` (`MULTISIG`), `signEscrowArkTx()` (`LIGHTNING_HODL`), or `signEscrowSafeUserOp()` (`SAFE_GUARD_EVM`, a `0x`-prefixed 65-byte ECDSA signature — same field name).
 </ParamField>
 
-<CodeGroup>
-```bash Request
-curl -X POST https://your-node.example.com/v1/settlement/escrow/escrow_abc123/submit-transaction-signature \
-  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..." \
-  -H "Content-Type: application/json" \
-  -d '{ "signedPsbtBase64": "cHNidP8BAH..." }'
-```
+Returns `{ complete }`. `complete: true` means every required signer has submitted, the transaction was finalized and broadcast, and the escrow moved to `COMPLETED` or `REFUNDED` with a `txReleaseId`. `complete: false` means other signers are still pending. Returns `403` if you aren't a required signer.
 
-```json Response
-{
-  "success": true,
-  "data": {
-    "escrowId": "escrow_abc123",
-    "complete": false,
-    "signaturesCollected": 1,
-    "signaturesRequired": 2,
-    "remainingSigners": ["part_xyz"]
-  }
-}
-```
-</CodeGroup>
+### Read the round
 
-<Note>
-  When `complete: true` in the response, the escrow has fully transitioned and `txReleaseId` will be populated. `complete: false` means the server is waiting on the other signer(s).
-</Note>
+**`GET /v1/settlement/escrow/:id/pending-transaction`** — returns the round in progress, or `404` if there is none.
 
 ---
 
-### Get Pending Transaction
+## Two-person approval
 
-**`GET /v1/settlement/escrow/:id/pending-transaction`**
-
-Retrieve the in-flight signature collection round for this escrow, including the unsigned transaction payload each signer must sign. Returns `404` if no signing round is currently in progress.
-
-<CodeGroup>
-```bash Request
-curl https://your-node.example.com/v1/settlement/escrow/escrow_abc123/pending-transaction \
-  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..."
-```
-
-```json Response
-{
-  "success": true,
-  "data": {
-    "id": "ptx_001",
-    "escrowId": "escrow_abc123",
-    "type": "RELEASE",
-    "unsignedPayload": "cHNidP8BAH...",
-    "requiredSigners": ["part_abc123", "part_xyz"],
-    "signaturesCollected": 1,
-    "createdAt": "2025-01-15T10:30:00Z"
-  }
-}
-```
-</CodeGroup>
-
----
-
-### Approve Release (Two-Person Control)
-
-**`POST /v1/settlement/escrow/:id/approve-release`**
-
-Record your approval of a pending release. Only the buyer and seller may call this. Once both parties have approved, `readyToRelease` becomes `true`. This endpoint only has effect when the `REQUIRE_DUAL_APPROVAL_RELEASE` feature flag is enabled on the node.
-
-**`GET /v1/settlement/escrow/:id/release-approvals`**
-
-List recorded approvals for this escrow plus the current `readyToRelease` state.
-
-<CodeGroup>
-```bash Approve
-curl -X POST https://your-node.example.com/v1/settlement/escrow/escrow_abc123/approve-release \
-  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..."
-```
-
-```json Response
-{
-  "success": true,
-  "data": {
-    "escrowId": "escrow_abc123",
-    "approvedBy": "part_abc123",
-    "readyToRelease": false
-  }
-}
-```
-</CodeGroup>
+**`POST /v1/settlement/escrow/:id/approve-release`** records your approval (buyer or seller only; idempotent) and returns `{ approval, readyToRelease }`. **`GET /v1/settlement/escrow/:id/release-approvals`** returns `{ approvals, readyToRelease }`. Approvals only gate releases when the node runs with dual-approval release enabled.
 
 ---
 
 ## Disputes
 
-If a trade breaks down — a buyer claims payment was sent but the seller won't release, or a seller claims no payment arrived — either party can open a dispute. Sails escalates automatically: Policy Engine rules are checked first, then OpenAgents automated resolution, and finally a trusted human arbitrator if neither resolves it.
+If a trade breaks down, either party can open a dispute. An arbiter is assigned, the parties submit evidence, and the arbiter issues a **signed** ruling that the node verifies before executing it. The node may also propose an automated ruling from on-device AI, which either party can reject during a contest window.
 
----
+| Method | Path | Who |
+| --- | --- | --- |
+| POST | `/v1/settlement/escrow/:id/dispute` | Party |
+| GET | `/v1/settlement/disputes` | Arbiter (your assigned disputes) |
+| GET | `/v1/settlement/disputes/:id` | Party or assigned arbiter |
+| POST | `/v1/settlement/disputes/:id/evidence` | Party |
+| POST | `/v1/settlement/disputes/:id/contest` | Party |
+| POST | `/v1/settlement/disputes/:id/resolve` | Assigned arbiter |
+| POST | `/v1/settlement/disputes/:id/appeal` | Party |
+| GET | `/v1/settlement/disputes/:id/semantic-record?appealRound=N` | Party |
 
-### Open a Dispute
+Dispute statuses: `OPENED`, `EVIDENCE_SUBMITTED`, `AUTO_PROPOSED`, `ARBITRATED`, `RESOLVED`, `APPEALED`.
+
+### Open a dispute
 
 **`POST /v1/settlement/escrow/:id/dispute`**
 
-Escalate an escrow to `DISPUTED` status and assign an arbitrator. Either the buyer or seller may call this. The response includes the `disputeId` — the only way for the other party to find it is via `GET /v1/settlement/escrow/:id` (the `disputes` array).
-
-<ParamField path="id" type="string" required>
-  The escrow ID to dispute.
-</ParamField>
-
 <ParamField body="reason" type="string" required>
-  A description of the dispute reason. This is attached to the dispute record and visible to the arbitrator.
+  Why you're disputing. Visible to the arbiter.
 </ParamField>
 
 <ParamField body="evidence" type="array">
-  Optional initial evidence items. Each entry should include `{ type, uri?, note? }`. You can attach additional evidence later via `POST /v1/settlement/disputes/:id/evidence`.
+  Optional initial evidence. Each item: `{ type, uri?, note?, evidenceReferenceId?, externalReference? }`. Use `evidenceReferenceId` to point at media stored through [Proof](/api/proof).
 </ParamField>
 
-<CodeGroup>
-```bash Request
-curl -X POST https://your-node.example.com/v1/settlement/escrow/escrow_abc123/dispute \
-  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..." \
-  -H "Content-Type: application/json" \
-  -d '{
-    "reason": "Seller is not responding after payment was sent 24 hours ago.",
-    "evidence": [
-      { "type": "PAYMENT_RECEIPT", "note": "PIX receipt showing R$450 sent on 2025-01-15" }
-    ]
-  }'
-```
+Moves the escrow to `DISPUTED`, persists the dispute, and assigns an arbiter.
 
-```json Response
-{
-  "success": true,
-  "data": {
-    "disputeId": "dispute_789",
-    "escrowId": "escrow_abc123",
-    "status": "OPENED",
-    "openedBy": "part_abc123",
-    "arbiterId": "arbiter_001",
-    "createdAt": "2025-01-15T11:00:00Z"
-  }
-}
-```
-</CodeGroup>
-
----
-
-### List Your Disputes
-
-**`GET /v1/settlement/disputes`** *(authentication required)*
-
-Retrieve all disputes associated with the authenticated participant. Results are always scoped to the caller's session — there is no `participantId` filter parameter.
-
-<ParamField query="limit" type="integer">
-  Number of disputes to return. Min `1`, max `50`, default `10`.
-</ParamField>
-
-<ParamField query="offset" type="integer">
-  Pagination offset. Default `0`.
-</ParamField>
-
-<CodeGroup>
-```bash Request
-curl "https://your-node.example.com/v1/settlement/disputes?limit=10&offset=0" \
-  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..."
-```
-
-```json Response
-{
-  "success": true,
-  "data": {
-    "disputes": [
-      {
-        "id": "dispute_789",
-        "escrowId": "escrow_abc123",
-        "status": "OPENED",
-        "openedBy": "part_abc123",
-        "ruling": null,
-        "createdAt": "2025-01-15T11:00:00Z"
-      }
-    ],
-    "total": 1,
-    "hasMore": false
-  }
-}
-```
-</CodeGroup>
-
----
-
-### Get Dispute Detail
-
-**`GET /v1/settlement/disputes/:id`**
-
-Retrieve the full detail of a specific dispute, including its evidence, status, and any ruling. This is a public read endpoint — no authentication required.
-
-<CodeGroup>
-```bash Request
-curl https://your-node.example.com/v1/settlement/disputes/dispute_789
-```
-
-```json Response
-{
-  "success": true,
-  "data": {
-    "id": "dispute_789",
-    "escrowId": "escrow_abc123",
-    "status": "EVIDENCE_SUBMITTED",
-    "openedBy": "part_abc123",
-    "arbiterId": "arbiter_001",
-    "ruling": null,
-    "evidence": [
-      {
-        "type": "PAYMENT_RECEIPT",
-        "note": "PIX receipt showing R$450 sent on 2025-01-15",
-        "submittedAt": "2025-01-15T11:00:00Z"
-      }
-    ],
-    "createdAt": "2025-01-15T11:00:00Z"
-  }
-}
-```
-</CodeGroup>
-
----
-
-### Resolve a Dispute
-
-**`POST /v1/settlement/disputes/:id/resolve`**
-
-Only the assigned arbitrator may call this endpoint. Issues a ruling of `RELEASE` (funds to buyer), `REFUND` (funds to seller), or `SPLIT` (partial split by basis points). The resolution triggers the corresponding escrow state transition automatically.
-
-<ParamField path="id" type="string" required>
-  The dispute ID.
-</ParamField>
-
-<ParamField body="ruling" type="string" required>
-  `RELEASE`, `REFUND`, or `SPLIT`.
-</ParamField>
-
-<ParamField body="releaseToAddress" type="string">
-  Destination address for a `RELEASE` ruling. Falls back to the buyer's registered payout address if omitted.
-</ParamField>
-
-<ParamField body="refundToAddress" type="string">
-  Destination address for a `REFUND` ruling. Falls back to the seller's registered payout address if omitted.
-</ParamField>
-
-<ParamField body="splitBuyerBps" type="integer">
-  Required for `SPLIT` rulings. The buyer's share in basis points (e.g. `5000` = 50%). No fallback — must be provided explicitly.
-</ParamField>
-
-<CodeGroup>
-```bash Request
-curl -X POST https://your-node.example.com/v1/settlement/disputes/dispute_789/resolve \
-  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..." \
-  -H "Content-Type: application/json" \
-  -d '{
-    "ruling": "RELEASE",
-    "releaseToAddress": "tb1q..."
-  }'
-```
-
-```json Response
-{
-  "success": true,
-  "data": {
-    "id": "dispute_789",
-    "status": "RESOLVED",
-    "ruling": "RELEASE",
-    "resolvedAt": "2025-01-15T14:00:00Z"
-  }
-}
-```
-</CodeGroup>
-
----
-
-### Attach Evidence
+### Submit evidence
 
 **`POST /v1/settlement/disputes/:id/evidence`**
 
-Attach additional evidence to an open dispute. Either trade party may submit evidence at any time while the dispute is in `OPENED` or `EVIDENCE_SUBMITTED` status. Submitting evidence transitions the dispute to `EVIDENCE_SUBMITTED`.
+Same item shape as above, plus an optional `idempotencyKey` (up to 200 characters) so a retry never records the same evidence twice. Allowed while the dispute is `OPENED` or `EVIDENCE_SUBMITTED`; moves it to `EVIDENCE_SUBMITTED`. If the node has automated resolution enabled, this can trigger an automated proposal — the response is always just the updated dispute.
 
-<ParamField path="id" type="string" required>
-  The dispute ID.
-</ParamField>
-
-<ParamField body="type" type="string" required>
-  Evidence type (e.g. `PAYMENT_RECEIPT`, `SCREENSHOT`, `BANK_STATEMENT`).
-</ParamField>
-
-<ParamField body="uri" type="string">
-  URI pointing to the evidence media (e.g. an IPFS or Nostr.build URL).
-</ParamField>
-
-<ParamField body="note" type="string">
-  A human-readable description of the evidence.
-</ParamField>
-
-<CodeGroup>
-```bash Request
-curl -X POST https://your-node.example.com/v1/settlement/disputes/dispute_789/evidence \
-  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..." \
-  -H "Content-Type: application/json" \
-  -d '{
-    "type": "SCREENSHOT",
-    "uri": "ipfs://Qm...",
-    "note": "Screenshot of completed PIX transfer from my banking app."
-  }'
-```
-
-```json Response
-{
-  "success": true,
-  "data": {
-    "id": "dispute_789",
-    "status": "EVIDENCE_SUBMITTED",
-    "evidenceCount": 2
-  }
-}
-```
-</CodeGroup>
-
----
-
-### Contest an Automated Ruling
+### Contest an automated proposal
 
 **`POST /v1/settlement/disputes/:id/contest`**
 
-If the system proposes an automated resolution (`status: AUTO_PROPOSED`), either trade party can reject it before the `autoResolutionDeadline` passes. This reverts the dispute to `EVIDENCE_SUBMITTED` and escalates it to the already-assigned human arbitrator — no new arbitrator is assigned.
+While a dispute is `AUTO_PROPOSED` and before its `autoResolutionDeadline`, either party can reject the proposal. The dispute returns to `EVIDENCE_SUBMITTED` and the already-assigned arbiter decides. After the deadline, returns `400`.
 
-<CodeGroup>
-```bash Request
-curl -X POST https://your-node.example.com/v1/settlement/disputes/dispute_789/contest \
-  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..."
-```
+### Resolve (arbiter)
 
-```json Response
-{
-  "success": true,
-  "data": {
-    "id": "dispute_789",
-    "status": "EVIDENCE_SUBMITTED",
-    "arbiterId": "arbiter_001"
-  }
-}
-```
-</CodeGroup>
+**`POST /v1/settlement/disputes/:id/resolve`**
 
----
+<ParamField body="ruling" type="string" required>
+  `RELEASE` (to the buyer), `REFUND` (to the seller), or `SPLIT`.
+</ParamField>
 
-### Appeal a Resolution
+<ParamField body="splitBuyerBps" type="integer">
+  Required for `SPLIT`: the buyer's share in basis points (1–9999).
+</ParamField>
+
+<ParamField body="authoritySignature" type="string" required>
+  Hex Ed25519 signature, by the arbiter's registered key, over the canonical ruling decision (dispute, escrow, appeal round, arbiter, ruling, split share, and `authorityIssuedAt`).
+</ParamField>
+
+<ParamField body="authorityIssuedAt" type="string" required>
+  ISO timestamp included in the signed decision.
+</ParamField>
+
+The node verifies the signature against the arbiter's registered key before any settlement runs — a request without a valid signature is rejected with `403`. Payouts go to the parties' registered payout addresses; `releaseToAddress` and `refundToAddress` are accepted for compatibility but ignored. `SPLIT` is supported for `MOCK`, `WDK_USDT_EVM`, and `MULTISIG`.
+
+<Tip>
+  The SDK's `settlement.resolveDisputeWithWallet()` builds the canonical decision and asks your wallet to sign it, so you never assemble the signature by hand.
+</Tip>
+
+### Appeal
 
 **`POST /v1/settlement/disputes/:id/appeal`**
 
-After a dispute is `RESOLVED`, either trade party can appeal to a larger, reputation-weighted panel. Appeals incur a fee (`appealFeeRequired` in the response), which is collected immediately and refunded or forfeited once the appeal panel rules. Only meaningful when the node is configured with `ARBITRATION_MODE=market`.
+Either party can reopen a `RESOLVED` dispute for a larger, reputation-weighted panel when the node runs market arbitration. Returns `{ dispute, appealFeeRequired }`; the appeal fee is refunded or forfeited once the panel rules.
 
-<CodeGroup>
-```bash Request
-curl -X POST https://your-node.example.com/v1/settlement/disputes/dispute_789/appeal \
-  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..."
-```
+### Semantic record
 
-```json Response
-{
-  "success": true,
-  "data": {
-    "id": "dispute_789",
-    "status": "OPENED",
-    "appealFeeRequired": "0.0001",
-    "appealFeeAsset": "BTC",
-    "panelSize": 5
-  }
-}
-```
-</CodeGroup>
+**`GET /v1/settlement/disputes/:id/semantic-record?appealRound=N`**
+
+Returns the durable ruling record for a given appeal round. Only the trade's parties can read it.
+
+### Recover an expired escrow
+
+**`POST /v1/settlement/escrow/:id/initiate-expiry-recovery`**
+
+If an escrow reached `EXPIRED` before payment, the seller — the only party with funds at stake — opens an arbitration to recover them. Returns the created dispute.
 
 ---
 
-## Payout Addresses
+## Arbitration
 
-Pre-register a payout address so you don't need to supply `toAddress` on every release, refund, or dispute resolution.
+| Method | Path | Auth | Description |
+| --- | --- | --- | --- |
+| POST | `/v1/settlement/arbitration/register` | Session | Register or top up your arbiter profile: `{ monetaryCollateral, collateralAsset? }`. Permissionless. |
+| GET | `/v1/settlement/arbitration/profile/:participantId` | — | An arbiter's public profile, or `404` |
 
-**`POST /v1/settlement/payout-addresses`** *(authentication required)*
+Market arbitration applies only when the node runs `ARBITRATION_MODE=market`.
 
-Register or overwrite your payout address for a specific asset. One address per `(participant, asset)` pair — a BTC address and an EVM address are independent entries.
+---
+
+## Payout addresses
+
+Every release, refund, and ruling pays out to the beneficiary's registered address for the escrow's asset. Register yours before you trade.
+
+**`POST /v1/settlement/payout-addresses`**
 
 <ParamField body="asset" type="string" required>
-  The asset this address accepts, e.g. `BTC` or `USDT`.
+  The asset this address receives, for example `BTC`.
 </ParamField>
 
 <ParamField body="address" type="string" required>
-  Your payout address for this asset.
+  Your payout address for that asset.
 </ParamField>
 
-**`GET /v1/settlement/payout-addresses/:participantId/:asset`**
+One address per `(participant, asset)`; registering again replaces it.
 
-Look up any participant's registered payout address for a given asset. Public read — no authentication required. Returns `404` if no address has been registered.
-
-<CodeGroup>
-```bash Register
-curl -X POST https://your-node.example.com/v1/settlement/payout-addresses \
-  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..." \
-  -H "Content-Type: application/json" \
-  -d '{ "asset": "BTC", "address": "tb1q..." }'
-```
-
-```bash Lookup
-curl https://your-node.example.com/v1/settlement/payout-addresses/part_xyz/BTC
-```
-
-```json Response
-{
-  "success": true,
-  "data": {
-    "participantId": "part_xyz",
-    "asset": "BTC",
-    "address": "tb1q..."
-  }
-}
-```
-</CodeGroup>
+**`GET /v1/settlement/payout-addresses/:participantId/:asset`** — self only (`403` for anyone else). Returns `{ participantId, asset, address }`, or `404` if you haven't registered one.
 
 ---
 
-## Error Reference
+## Payment accounts
 
-<Expandable title="Settlement error codes">
-  | `error` | HTTP | When it occurs |
-  |---|---|---|
-  | `VALIDATION_ERROR` | 400 | Required field missing, invalid amount string, or `splitBuyerBps` absent on `SPLIT` ruling |
-  | `AUTH_ERROR` | 401 | Missing or expired session token |
-  | `FORBIDDEN` | 403 | Attempting an action as a non-party to the escrow, or calling `resolve` without being the assigned arbitrator |
-  | `NOT_FOUND` | 404 | Escrow, dispute, or payout address not found |
-  | `ESCROW_ERROR` | 409 | Action attempted from an invalid escrow state (e.g. calling `release` on a `CREATED` escrow, or calling `release` on a `MULTISIG` type) |
-  | `RATE_LIMIT_EXCEEDED` | 429 | Too many requests — check `Retry-After` |
-  | `INTERNAL_ERROR` | 500 | Unexpected server error |
-</Expandable>
+A payment account is a hashed off-chain payment identity (for example a PIX key) that builds trust over time. Hash the raw identifier client-side with the SDK's `hashPaymentAccount()` — never send the raw value.
+
+| Method | Path | Auth | Description |
+| --- | --- | --- | --- |
+| POST | `/v1/settlement/payment-accounts` | Session | Register `{ accountHash, paymentMethod }`. Idempotent for an existing hash. |
+| GET | `/v1/settlement/payment-accounts/:accountHash` | — | Public trust view of an account (no owner identity) |
+| POST | `/v1/settlement/payment-accounts/:accountHash/sign` | Session | Attest a completed trade with this account |
+
+`paymentMethod` is one of `PIX`, `TED`, `BANK_TRANSFER`, `CRYPTO_DIRECT`, `LIGHTNING_DIRECT`, `CASH`, `OTHER`.
+
+---
+
+## Errors
+
+| `error` | HTTP | When |
+| --- | --- | --- |
+| `VALIDATION_ERROR` | 400 | Missing field, invalid amount or key, `SPLIT` without `splitBuyerBps`, or a closed contest window |
+| `AUTH_ERROR` | 401 | Missing or expired session |
+| `FORBIDDEN` | 403 | Not a party, not the required signer, not the assigned arbiter, or an invalid ruling signature |
+| `NOT_FOUND` | 404 | Escrow, dispute, round, profile, or payout address not found |
+| `ESCROW_ERROR` | 409 | Action from an invalid state, a direct release on a client-held-key provider, a round already in flight, or no registered payout address |
+| `RATE_LIMIT_EXCEEDED` | 429 | Too many requests (disputes, rulings, and appeals have a stricter limit) |

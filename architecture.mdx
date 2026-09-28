@@ -1,123 +1,111 @@
 ---
 title: "Sails Protocol: WDK, Pears, QVAC Architecture Guide"
 sidebarTitle: "Architecture"
-description: "Learn the three-layer Sails Protocol stack: WDK for key management, Pears for P2P networking, and QVAC for on-device AI — plus nine protocol primitives."
+description: "How a Sails node is put together: the protocol modules and nine primitives, the settlement providers, and how WDK, Pears, and QVAC fit in."
 ---
 
-Sails Protocol is built in three coordinated layers — key management (WDK), P2P transport (Pears), and on-device AI (QVAC) — on top of which the protocol modules run. None of these technologies are reimplemented inside Sails: the protocol's job is to coordinate them, taking an AI agent's decision (QVAC), letting it reach a counterparty with no central server (Pears), and settling the resulting trade with a real digitally-signed transaction (WDK). Understanding these three layers will help you choose the right escrow provider, transport configuration, and agent capabilities for your integration.
+A Sails deployment is a **node** — the TypeScript reference implementation — that your application talks to over HTTP and WebSocket, usually through the Sails P2P Trading SDK. The node runs the protocol modules on PostgreSQL and Redis, and plugs in external technology where it adds real value: settlement providers for moving assets, Pears for peer-to-peer transport, and QVAC for local AI.
 
-## Three Foundation Technologies
+```text
+            Your application (wallet, exchange, OTC desk)
+                 @satsails/p2p-trading-sdk · @satsails/sdk-react
+                                 │  HTTP /v1/*  ·  WebSocket (ticket auth)
+┌──────────────────────────── Sails node ─────────────────────────────┐
+│ OpenIdentity · OpenLiquidity · OpenP2P · OpenSettlement             │
+│ OpenReputation · OpenProof · OpenAgents · Intent Engine             │
+│ Capability Registry · settlement reconciliation                     │
+│   PostgreSQL (durable state)            Redis (sessions, tickets)   │
+└──────┬──────────────────────┬───────────────────────┬───────────────┘
+       │                      │                       │
+ Settlement providers    Pears / HyperDHT         QVAC (local LLM)
+ MULTISIG · LIGHTNING_HODL · optional P2P          intents, risk,
+ SAFE_GUARD_EVM · WDK_USDT_EVM  discovery/transport  advisory rulings
+       │
+ Bitcoin · Ark · EVM chains
+```
+
+The protocol itself is a specification of interfaces, events, and behavior. The node is one implementation of it; any implementation that satisfies the contracts is a valid Sails node.
+
+## The external pieces
 
 <CardGroup cols={3}>
-  <Card title="WDK" icon="key" href="/introduction">
-    **Wallet Infrastructure.** Tether's Wallet Development Kit provides non-custodial key derivation and transaction signing across Bitcoin, Liquid, EVM chains, and more. Sails tells WDK *when* to sign via `executeSettlement()` — it never touches a private key directly.
+  <Card title="Settlement providers" icon="key">
+    Move the asset. `MULTISIG` builds 2-of-3 Bitcoin P2WSH escrows with bitcoinjs; `LIGHTNING_HODL` uses Arkade; `SAFE_GUARD_EVM` uses Safe + ERC-4337; `WDK_USDT_EVM` uses Tether's **WDK** for real USDT transfers as a server-custodial reference implementation.
   </Card>
-  <Card title="Pears" icon="network-wired" href="/introduction">
-    **P2P Communication.** Holepunch's HyperDHT and Hyperswarm provide serverless peer discovery and direct, NAT-traversed connections between two nodes. Sails never runs its own DHT or discovery server — it only decides what gets sent once Pears has two peers connected.
+
+  <Card title="Pears" icon="network-wired">
+    Holepunch's HyperDHT gives each participant an optional P2P node (`/v1/peers`) for peer discovery, per-trade topics, and direct offer broadcast — alongside, not instead of, the node's HTTP and WebSocket APIs.
   </Card>
-  <Card title="QVAC" icon="microchip-ai" href="/introduction">
-    **Agent Infrastructure.** Tether's on-device LLM (llama.cpp, GPU-accelerated) runs entirely locally — no cloud API, no data leaving the device. Sails uses QVAC for trade intent generation, offer matching, and risk assessment via the OpenAgents module.
+
+  <Card title="QVAC" icon="microchip-ai">
+    Tether's local AI runtime (llama.cpp) on the node. It drafts intents and offers, assesses intent risk, flags social-engineering patterns in chat, and can propose advisory dispute rulings. No cloud AI service.
   </Card>
 </CardGroup>
 
-## Protocol Layers
+## Nine protocol primitives
 
-Read the diagram bottom-to-top for "what does this run on" — from settlement assets through the Tether infrastructure, up through the protocol modules to your application. Read it top-to-bottom for "what do I integrate" — your application makes one SDK call, and the protocol coordinates everything below it.
+<AccordionGroup>
+  <Accordion title="1. Identity — who is participating">
+    An Ed25519 keypair, registered on a node with proof of possession, authenticated by signing challenges. No email, username, or password.
 
-```text
-          Your Application
-       @satsails/p2p-trading-sdk
-              Sails Protocol
-OpenP2P · OpenSettlement · OpenIdentity · OpenReputation
-OpenLiquidity · OpenAgents · OpenProof · OpenFinance
-════ WDK (Tether) · Pears (Holepunch) · QVAC (Tether) ════
-Bitcoin · Liquid · Lightning · USDT
-```
+    **API:** `POST /v1/identity/register-challenge`, `POST /v1/identity/participants`, `POST /v1/identity/challenge`, `POST /v1/identity/authenticate`
+  </Accordion>
 
-The three-layer split means infrastructure choices belong to your implementation, not the protocol. The spec defines interfaces, events, and behavior — it has no opinion about your storage backend, transport stack, or runtime. Any implementation that satisfies the protocol contracts is a valid Sails Protocol node.
+  <Accordion title="2. Intent — what someone wants">
+    A validated declaration of a desired outcome. `TradeIntent` is implemented today; the Intent Engine runs it through `CREATED → VALIDATED → COORDINATED` and can find a matching offer within its declared limits.
 
-## Nine Protocol Primitives
+    **API:** `POST /v1/intents`, `POST /v1/intents/:id/propose`, `DELETE /v1/intents/:id`
+  </Accordion>
 
-Every interaction in Sails Protocol starts as one of nine primitives. Together they form the complete lifecycle of a P2P financial transaction — from expressing intent to resolving disputes.
+  <Accordion title="3. Discovery — who else">
+    Offers live in the node's offer book (OpenLiquidity), searchable by asset, side, payment method, and price. Participants can also broadcast offers to connected peers over HyperDHT.
 
-<Accordion title="1. Identity — Cryptographic participant identity">
-  An Ed25519 keypair is the sole identity primitive. Every participant — human or AI agent — has exactly one identity that is portable across every application integrating Sails. There is no email, no username, no platform account. Identity accumulates reputation over time and cannot be transferred to another keypair.
+    **API:** `POST /v1/liquidity/offers`, `GET /v1/liquidity/offers`, `POST /v1/liquidity/match`
+  </Accordion>
 
-  **API:** `POST /v1/identity/participants`, `POST /v1/identity/authenticate`
-</Accordion>
+  <Accordion title="4. Negotiation — how terms get agreed">
+    Each trade has a real-time channel (chat, status, escrow, presence, and risk events) relayed and stored by the node, with catch-up after disconnections. Structured, agent-to-agent negotiation is designed but not implemented.
 
-<Accordion title="2. Intent — Expressed desired outcome">
-  An Intent is the universal entry point for every protocol action: `TradeIntent`, `PaymentIntent`, `LoanIntent`. The Intent Engine validates, routes, and tracks the lifecycle of every Intent through eleven states — from `CREATED` through `VALIDATED`, `COORDINATED`, and onward to `COMPLETED` or `DISPUTED`. Intents are never trusted as-is; they are validated before any module acts on them.
+    **API:** `WS /v1/openp2p/chat?ticket=…`, `GET /v1/openp2p/chat/:tradeId/messages`, `POST /v1/openp2p/trades/:id/reconcile`
+  </Accordion>
 
-  **API:** `POST /v1/intents`
-</Accordion>
+  <Accordion title="5. Settlement — how value moves">
+    Behind the `SettlementProvider` interface: `MOCK`, `MULTISIG`, `LIGHTNING_HODL`, `SAFE_GUARD_EVM`, and `WDK_USDT_EVM` (`LIQUID_COVENANT` reserved). Client-held-key providers release through signing rounds; a reconciliation process finishes settlements interrupted by a crash from durable state.
 
-<Accordion title="3. Discovery — P2P offer matching via HyperDHT">
-  Liquidity discovery runs over Holepunch's HyperDHT — there is no central order book server to query. Sellers publish offers (`Offer` entities belong to OpenLiquidity, not OpenP2P, so any future module can reuse the same discovery layer). Buyers discover offers using asset, side, and amount filters.
+    **API:** `POST /v1/settlement/escrow`, `…/lock`, `…/initiate-release`, `…/submit-transaction-signature`, `…/release`
+  </Accordion>
 
-  **API:** `POST /v1/liquidity/offers`, `GET /v1/liquidity/offers`
-</Accordion>
+  <Accordion title="6. Reputation — why to trust">
+    An outcome-based score tied to the identity; only settlement outcomes move it. Ratings are informational; vouches put the voucher's own score at stake.
 
-<Accordion title="4. Negotiation — End-to-end encrypted chat over Secretstream">
-  Once a trade is opened, both parties communicate through a Secretstream-encrypted channel delivered over Pears/Hyperswarm. No central server relays messages — the channel is direct, peer-to-peer, and end-to-end encrypted. The `ReconciliationService` re-syncs missed messages if a peer disconnects and reconnects.
+    **API:** `GET /v1/reputation/:participantId`, `POST /v1/reputation/rate`, `POST /v1/reputation/vouch`
+  </Accordion>
 
-  **API:** `GET /v1/openp2p/chat/:tradeId/messages` (WebSocket)
-</Accordion>
+  <Accordion title="7. Agent — who assists">
+    Local AI drafts and advises; it never signs, negotiates, or moves funds. Social-engineering detection only raises warnings.
 
-<Accordion title="5. Settlement — Pluggable escrow providers">
-  Settlement is abstracted behind a `SettlementProvider` interface with pluggable implementations. You choose the escrow type that fits your use case:
+    **API:** `POST /v1/agents/generate-trade-intent`, `POST /v1/agents/generate-offer-intent`, `POST /v1/agents/assess-intent-risk`
+  </Accordion>
 
-  | Provider | Description |
-  |---|---|
-  | `MOCK` | In-memory escrow for development and testing. No on-chain interaction. |
-  | `MULTISIG` | Real 2-of-3 Bitcoin multisig. Verifies on-chain BTC at a derived P2WSH address. |
-  | `LIGHTNING_HODL` | Lightning HODL invoice escrow via Arkade/VTXO. |
-  | `WDK_USDT_EVM` | Real USDT transfer on EVM chains via `@tetherto/wdk-wallet-evm`. |
+  <Accordion title="8. Proof — how a claim is verified">
+    The `Claim → Proof → Verification` chain, with signed evidence media (local or S3-compatible storage), duplicate-evidence detection across trades, optional OpenTimestamps anchoring, and hash-chained trade evidence bundles.
 
-  **API:** `POST /v1/settlement/escrow`, `POST /v1/settlement/escrow/:id/lock`, `POST /v1/settlement/escrow/:id/release`
-</Accordion>
+    **API:** `POST /v1/proof/claims`, `POST /v1/proof/proofs`, `POST /v1/proof/proofs/:id/evidence`, `GET /v1/proof/trades/:tradeId/bundle`
+  </Accordion>
 
-<Accordion title="6. Reputation — Outcome-based scoring tied to cryptographic identity">
-  Reputation is accumulated against an Ed25519 keypair — not a platform account — so it travels with the participant across every Sails-integrated application. Scores are outcome-based: only `recordOutcome()` moves the score. Star ratings are informational feedback only. A trade cancelled by mutual agreement always classifies as Neutral, never Negative.
+  <Accordion title="9. Dispute — how disagreements resolve">
+    An assigned arbiter reviews evidence and issues a ruling signed with their own key; the node verifies it before settling. QVAC may add an advisory proposal that either party can contest; it never executes on its own. Appeals are available under market arbitration.
 
-  **API:** `GET /v1/reputation/:participantId`, `POST /v1/reputation/rate`
-</Accordion>
+    **API:** `POST /v1/settlement/escrow/:id/dispute`, `POST /v1/settlement/disputes/:id/resolve`
+  </Accordion>
+</AccordionGroup>
 
-<Accordion title="7. Agent — On-device AI assistance via QVAC">
-  The OpenAgents module wraps QVAC for structured AI assistance. `BuyerAgent` and `SellerAgent` autonomously generate real `TradeIntentPayload` and offer JSON via local LLM inference — no cloud API. The Social Engineering Agent watches live chat messages for fraud-precursor patterns (off-channel migration, payment-instruction changes) and raises a `RISK_WARNING` in the trade's chat. Detection only — the agent never takes unilateral action.
+Two Core components work across the primitives without being primitives themselves: the **Capability Registry** (a participant's recorded consent to gated actions, enforced on production nodes) and the **Policy Engine** (rules that govern how primitives behave).
 
-  **API:** `POST /v1/agents/generateTradeIntent`, `POST /v1/agents/generateOfferIntent`, `POST /v1/agents/assessIntentRisk`
-</Accordion>
+## Assets
 
-<Accordion title="8. Proof — Cryptographic claim/proof/verification chain">
-  OpenProof standardizes the `Claim → Proof → Verification` chain across every module. Dispute evidence, payment proofs, and future underwriting documents all flow through this primitive instead of each building their own format. A Proof Registry fingerprints evidence and flags reuse across Intents. An optional `TimestampAnchor` adapter (OpenTimestamps/RFC 3161) lets you prove evidence timestamps cryptographically rather than self-declaring them.
-
-  **API:** `POST /v1/proof/proofs`, `GET /v1/proof/proofs/:intentId`
-</Accordion>
-
-<Accordion title="9. Dispute — Formal escalation to arbiters">
-  When a trade goes wrong, the Dispute primitive provides a formal escalation path: Policy Engine → OpenAgents (AI-assisted mediation) → Trusted Arbitrator (via the `ArbitrationProvider` interface) → Settlement. The escalation order is explicit and policy-governed — a dispute never jumps straight to human arbitration unless the automated stages are exhausted first.
-
-  **API:** `POST /v1/settlement/escrow/:id/dispute`
-</Accordion>
-
-## Supported Assets
-
-Sails Protocol supports the following assets across the settlement and liquidity modules:
-
-| Asset | Description |
-|---|---|
-| `BTC` | Bitcoin (on-chain) |
-| `USDT_ERC20` | Tether USD on Ethereum |
-| `USDT_TRC20` | Tether USD on Tron |
-| `USDT_LIQUID` | Tether USD on the Liquid Network |
-| `USDT_LIGHTNING` | Tether USD over Lightning |
-| `LN_BTC` | Bitcoin over Lightning |
-| `LIQUID_BTC` | Bitcoin on the Liquid Network (L-BTC) |
-| `SPARK` | Spark protocol asset |
-| `STACKS` | Stacks (STX) |
-| `RSK_BTC` | Bitcoin on RSK (RBTC) |
+Offers and intents accept these assets: `BTC`, `LN_BTC`, `LIQUID_BTC`, `RSK_BTC`, `USDT_ERC20`, `USDT_TRC20`, `USDT_LIQUID`, `USDT_LIGHTNING`, `SPARK`, and `STACKS`. Settlement support depends on the provider registered for each asset — see [Escrow Lifecycle](/guides/escrow-lifecycle).
 
 <Tip>
-  For deeper explanations of each primitive — including their state machines, event namespaces, and interface contracts — see the [Core Concepts](/concepts/protocol-primitives) section. The [API Reference](/api/overview) documents every endpoint with full request/response schemas.
+  For each primitive's details, see [Core Concepts](/concepts/protocol-primitives). The [API Reference](/api/overview) documents every endpoint.
 </Tip>

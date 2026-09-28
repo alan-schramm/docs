@@ -1,62 +1,58 @@
 ---
 title: "Sails Protocol REST API: Modules, Versioning, and Errors"
 sidebarTitle: "Overview"
-description: "The Sails Protocol REST API exposes all nine protocol modules over HTTP and WebSocket. Base URL, versioning, response format, and error codes explained."
+description: "The Sails Protocol REST API exposes the protocol modules over HTTP and WebSocket. Base URL, module prefixes, health checks, response format, and error codes."
 ---
 
-The Sails Protocol server exposes a versioned REST API at `/v1/*` alongside a WebSocket endpoint for real-time trade communication. Every request and response body uses JSON, and all application-facing interactions are organized around the Intent lifecycle — you express what you want to do, and the protocol coordinates the underlying modules on your behalf.
+The Sails Protocol node exposes a versioned REST API under `/v1/*`, plus WebSocket channels for real-time trade communication. Every request and response body is JSON. Application-facing flows are organized around the Intent lifecycle: you express what you want to do, and the node coordinates the underlying modules.
 
 ## Base URL
 
 Point your client at the URL of your Sails node. For local development, the reference implementation runs at:
 
-```
+```text
 http://localhost:3000
 ```
 
 <Note>
-  In production, replace `http://localhost:3000` with the URL of your own Sails node. Sails Protocol is self-hosted — there is no shared cloud endpoint.
+  Sails Protocol is self-hosted — there is no shared cloud endpoint. In production, use the URL of the node you run or integrate with.
 </Note>
 
-The WebSocket endpoint is available at:
+## API modules
 
-```
-ws://localhost:3000/ws?userId=<your-participant-id>
-```
+Routes follow the convention `/v1/{module}/{resource}`:
 
-## API Modules
+| Module | Prefix | What it covers |
+| --- | --- | --- |
+| OpenIdentity | `/v1/identity` | Participant registration, challenge-response authentication, WebSocket tickets |
+| OpenLiquidity | `/v1/liquidity` | Publish, discover, and match offers; order book |
+| OpenP2P | `/v1/openp2p` | Trades, trade status, message history, real-time chat |
+| OpenSettlement | `/v1/settlement` | Escrow lifecycle, signature collection, disputes, arbitration, payout addresses, payment accounts |
+| OpenReputation | `/v1/reputation` | Trust scores, leaderboard, ratings, vouches |
+| OpenProof | `/v1/proof` | Claims, proofs, verification, evidence, trade evidence bundles |
+| OpenAgents | `/v1/agents` | On-device AI: intent generation and risk assessment |
+| Capabilities | `/v1/capabilities` | Capability grants |
+| Peers | `/v1/peers` | P2P transport node (HyperDHT) |
 
-All routes follow the convention `/v1/{module}/{resource}`. Each of the nine protocol modules has its own prefix:
+The Intent Engine lives at `/v1/intents`, outside the module convention: Intent is a cross-cutting protocol primitive, not owned by any single module.
 
-| Module | Prefix | Description |
-|---|---|---|
-| OpenIdentity | `/v1/identity` | Register and authenticate participants |
-| OpenLiquidity | `/v1/liquidity` | Publish and discover offers |
-| OpenP2P | `/v1/openp2p` | Trades and negotiation |
-| OpenSettlement | `/v1/settlement` | Escrow and disputes |
-| OpenReputation | `/v1/reputation` | Trust scores and vouching |
-| OpenAgents | `/v1/agents` | AI-assisted intent generation |
-| OpenProof | `/v1/proof` | Cryptographic claims and evidence |
-| Capabilities | `/v1/capabilities` | Capability grants (RFC-013) |
-| Peers | `/v1/peers` | P2P transport management |
+## Health and operations
 
-The Intent Engine (`/v1/intents`) sits outside the module convention deliberately — Intent is a cross-cutting Core primitive, not owned by any single module.
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /health` | Basic liveness plus node metadata and feature flags |
+| `GET /health/live` | Liveness probe — the process is up |
+| `GET /health/ready` | Readiness probe — checks PostgreSQL and Redis; returns `503` with `status: "not_ready"` if either fails |
+| `GET /metrics` | Prometheus metrics |
+| `GET /` | Node overview (name, protocol, version, WebSocket path) |
 
-## Health Check
-
-Before making any other requests, confirm your node is running:
-
-```bash
-GET /health
-```
-
-A healthy node responds with:
+A healthy node responds to `GET /health` with:
 
 ```json
 {
   "status": "ok",
-  "timestamp": "2025-01-15T10:00:00Z",
-  "version": "0.1.1",
+  "timestamp": "2026-09-21T10:00:00.000Z",
+  "version": "0.2.0",
   "protocol": "Sails Protocol",
   "module": "Sails OpenP2P",
   "referenceImplementation": "Satsails Wallet",
@@ -67,58 +63,73 @@ A healthy node responds with:
 }
 ```
 
-You can also hit the root path for a quick overview of the node:
+`GET /health/ready` reports each dependency with its latency:
 
-```bash
-GET /
+```json
+{
+  "status": "ready",
+  "timestamp": "2026-09-21T10:00:00.000Z",
+  "checks": {
+    "postgres": { "ok": true, "latencyMs": 2 },
+    "redis": { "ok": true, "latencyMs": 1 }
+  }
+}
 ```
 
-## Response Format
+## Response format
 
-All responses are JSON. Successful responses return the requested resource or action result wrapped in a `data` envelope with a `success` flag — for example, a `POST /v1/identity/participants` call returns `{ "success": true, "data": { ...participant } }`.
+Successful responses wrap the result in a `data` envelope with a `success` flag:
 
-Error responses always follow this shape:
+```json
+{ "success": true, "data": { "...": "..." } }
+```
+
+The HTTP status code carries the outcome (`200` OK, `201` Created). Error responses always have this shape:
 
 ```json
 {
   "success": false,
   "error": "NOT_FOUND",
-  "message": "Participant not found: part_abc123",
+  "message": "Participant not found: 5b1c…",
   "details": [],
   "requestId": "req-7f3a1c",
   "docsUrl": "https://github.com/alan-schramm/Sails-Protocol/blob/main/docs/API_REFERENCE.md#9-error-response-shape"
 }
 ```
 
-Every error response includes a `requestId` (matching the server log line for that request) and a `docsUrl` pointing to the error code reference. Use the `requestId` when reporting issues — it lets you pinpoint the exact failed request in server logs.
+Every error includes a `requestId` that matches the node's log line for that request — include it when you report an issue.
 
-The full error code taxonomy:
-
-| `error` | HTTP Status | Meaning |
-|---|---|---|
-| `VALIDATION_ERROR` | 400 | Request body or query failed schema validation |
+| `error` | HTTP status | Meaning |
+| --- | --- | --- |
+| `VALIDATION_ERROR` | 400 | Request body or query failed validation. `details` lists the failing fields. |
+| `AUTH_ERROR` | 401 | Missing or invalid session token, or a signature that did not verify |
+| `FORBIDDEN` | 403 | Authenticated, but not authorized for this resource or action |
 | `NOT_FOUND` | 404 | The referenced resource does not exist |
-| `AUTH_ERROR` | 401 | Missing or invalid session token |
-| `FORBIDDEN` | 403 | Authenticated, but not authorized for this specific action |
-| `ESCROW_ERROR` | 409 | An escrow action was attempted from an invalid state |
-| `RATE_LIMIT_EXCEEDED` | 429 | Too many requests — check response headers for retry timing |
+| `ESCROW_ERROR` | 409 | An escrow or settlement action was attempted from an invalid state |
+| `RATE_LIMIT_EXCEEDED` | 429 | Too many requests — retry after the time indicated in the response headers |
 | `REQUEST_ERROR` | 4xx | Request rejected for a reason not covered above |
-| `INTERNAL_ERROR` | 500 | Unexpected server error |
+| `INTERNAL_ERROR` | 500 | Unexpected server error. The message is redacted outside development mode. |
 
 ## Authentication
 
-Most endpoints require an active session. Pass your session token in the `Authorization` header on every authenticated request:
+Most endpoints require a session. Pass your session token in the `Authorization` header:
 
-```
+```text
 Authorization: Bearer <your-session-token>
 ```
 
-Sails Protocol uses Ed25519 challenge-response authentication — no passwords or API keys. You register a public key, sign a server-issued challenge, and receive a session token. See the [Authentication guide](/api/authentication) for the full step-by-step flow and SDK usage.
+Sails uses Ed25519 challenge-response authentication — no passwords or API keys. Your participant ID is always derived from the session, never from the request body. See [Authentication](/api/authentication) for the full flow.
 
-## API Versioning
+WebSocket connections can't carry an `Authorization` header, so they authenticate with a short-lived, single-use ticket from `POST /v1/identity/ws-ticket`. See [WebSocket](/api/websocket).
 
-The API is currently at `v0.1`. The stable contract guarantees no breaking changes to any documented endpoint until v1.0. All routes are prefixed with `/v1/` — when a future major version ships, `/v2/` routes will be introduced alongside the existing `/v1/` routes before the older version is retired.
+## Amounts
+
+All financial amounts are **decimal strings** (for example `"0.0015"`), never JSON numbers. This keeps exact precision across languages and runtimes.
+
+## Versioning
+
+All routes are prefixed with `/v1/`. The public TypeScript SDK (`@satsails/p2p-trading-sdk`, currently `0.2.0`) follows a pre-v1 compatibility contract: documented methods don't change incompatibly before v1 — only additive changes are made. When a future major API version ships, its routes will be introduced alongside `/v1/` before the older version is retired.
 
 <Tip>
-  The Swagger UI is available at `/docs` on your Sails node for interactive exploration and live request testing against your local instance.
+  In non-production environments, the node serves an interactive OpenAPI (Swagger) UI at `/docs` for exploring and testing endpoints. It's disabled in production.
 </Tip>

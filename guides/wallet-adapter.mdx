@@ -32,17 +32,19 @@ interface WalletAdapter {
   signMessage(message: Uint8Array): Promise<Uint8Array>;
   /** Declare what assets and features this wallet supports */
   getCapabilities(): Promise<WalletCapabilitiesDeclaration>;
+  /** Optional: release resources when the client is done */
+  disconnect?(): Promise<void>;
 }
 ```
 
-`getCapabilities()` returns a `WalletCapabilitiesDeclaration` describing which assets and fiat rails your wallet supports and whether it can participate in P2P trading and on-chain settlement. This declaration is used by the Capability Registry to derive the correct scope for your wallet's grants.
+`getCapabilities()` returns a `WalletCapabilitiesDeclaration` describing which assets and fiat rails your wallet supports and whether it can take part in P2P trading and on-chain settlement. It's descriptive: it doesn't grant protocol permissions — those are the participant's own [capability grants](/api/capabilities).
 
 ## Implementing the Adapter
 
 Start with a minimal implementation that delegates each method to your existing wallet's API. The key constraints are:
 
 - `getBalance()` must return a **decimal string** (e.g. `'0.5'`), never a JavaScript number
-- `getAddress()` returns one address per asset — the same address the escrow settlement will pay out to
+- `getAddress()` returns one address per asset. Settlements pay the participant's **registered payout address** (`settlement.setPayoutAddress()`), so register this address there before trading
 - `signMessage()` must produce an Ed25519 signature over the raw `Uint8Array` challenge — this is what `identity.authenticateWithWallet()` uses
 
 ```typescript
@@ -78,7 +80,7 @@ class MyWalletAdapter implements WalletAdapter {
 ```
 
 <Tip>
-  Use the `MockWalletAdapter` from `@satsails/p2p-trading-sdk` during development. It returns deterministic fake values so you can test wallet-backed registration and authentication without connecting a real wallet.
+  During development, use `MockWalletAdapter` (deterministic fake values) or `LocalKeypairWalletAdapter` (backed by a real local Ed25519 keypair), both exported by `@satsails/p2p-trading-sdk`.
 </Tip>
 
 ## Passing the Adapter to SailsClient
@@ -93,30 +95,32 @@ const client = new SailsClient({
   wallet: myAdapter,
 });
 
-// Wallet-backed registration — retrieve the public key from your adapter,
-// then register it with the node. The private key never leaves your wallet.
+// The Ed25519 public key (hex) your wallet signs with.
 const publicKeyHex = await myAdapter.getPeerId();
-const participant = await client.identity.createWithPublicKey(
-  publicKeyHex,
-  'My Wallet'
-);
+
+// Wallet-backed registration: the node requires proof that you hold the key,
+// which the wallet produces with signMessage(). The private key never leaves it.
+const participant = await client.identity.createWithWallet(publicKeyHex, myAdapter, 'My Wallet');
 
 // Wallet-backed sign-in
 await client.identity.authenticateWithWallet(publicKeyHex, myAdapter);
 ```
 
-`identity.createWithPublicKey()` registers a participant using only the public key — no keypair object is created and no secret key ever passes through the SDK. `identity.authenticateWithWallet()` completes the Ed25519 challenge-response flow entirely inside your adapter's `signMessage()` method.
+`identity.createWithWallet()` asks for a registration challenge, has your adapter sign the proof-of-possession message, and registers the public key. `identity.authenticateWithWallet()` completes the challenge-response login the same way. No secret key ever passes through the SDK.
 
-## Auto-Registering Capabilities
+<Warning>
+  `identity.createWithPublicKey()` is deprecated: nodes now require proof of possession at registration, which a bare public key can't provide.
+</Warning>
 
-Once authenticated, register a `CapabilityGrant` derived directly from your wallet's declared capabilities. This saves you from manually assembling a `capabilities.register()` call — the SDK reads `getCapabilities()` from your adapter and derives the correct scope automatically.
+## Capability grants
+
+Production nodes require the participant to hold the canonical capability grants before creating intents or moving escrow funds. After authenticating, run this once per login — it's idempotent:
 
 ```typescript
-// Registers a CapabilityGrant derived from your wallet's declared capabilities
-await client.capabilities.registerFromWallet(myAdapter);
+await client.capabilities.ensureCanonicalGrants(participant.id);
 ```
 
-The resulting grant is scoped to the assets and features your wallet declared. You can inspect active grants at any time with `capabilities.list(participantId)` and revoke individual grants with `capabilities.revoke(grantId)`.
+Grants are your own recorded consent, not something the wallet declaration derives. `capabilities.registerFromWallet()` is deprecated. Inspect grants with `capabilities.list(participantId)` and revoke one with `capabilities.revoke(grantId)`. See [Capabilities](/api/capabilities).
 
 ## Wallet Adapter vs. Direct Keypairs
 

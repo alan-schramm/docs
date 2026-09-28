@@ -4,7 +4,7 @@ sidebarTitle: "Intents"
 description: "Intents are machine-readable declarations of desired outcomes in Sails Protocol. Learn how TradeIntent works and how the Intent Engine routes them."
 ---
 
-An Intent is a machine-readable declaration of what you want to achieve — buy BTC, sell USDT, exchange at a specific price. Rather than issuing imperative commands, you express a goal and the Sails Protocol Intent Engine handles the coordination: routing your Intent to the right module, discovering counterparties, and tracking the outcome through fulfillment. Every interaction in Sails Protocol begins with an Intent.
+An Intent is a machine-readable declaration of what you want to achieve — buy BTC, sell USDT, exchange at a specific price. Rather than issuing imperative commands, you express a goal and the Sails Protocol Intent Engine handles the coordination: routing your Intent to the right module, discovering counterparties, and tracking the outcome through fulfillment. Intents are the protocol's way of expressing a goal; you can also trade directly from an offer without creating one.
 
 ## Intent Types
 
@@ -41,6 +41,22 @@ Once created, the Intent Engine moves your Intent through its lifecycle automati
 
 `CREATED` → `VALIDATED` → `COORDINATED` → `DISCOVERING` → `MATCHED` → `NEGOTIATING` → `COMMITTED` → `SETTLING` → `FULFILLED`
 
+An intent can also end `EXPIRED`, `CANCELLED`, or `FAILED`.
+
+## Finding an offer for an intent
+
+`proposeTrade()` looks for a real offer within the limits your intent declared (price range, minimum reputation, amount). It's deterministic matching, not AI:
+
+```typescript
+const proposal = await client.proposeTrade(intent.id, '0.01');
+if (proposal) {
+  // Nothing happens until you approve by opening the trade yourself.
+  await client.openp2p.trade(proposal.offerId, '0.01');
+}
+```
+
+`null` means nothing matched within your limits. `proposeTradeOutcome()` returns the same proposal plus a `counterProposal` when only the price missed — its suggested price is always your own declared bound. Neither call opens a trade or touches escrow.
+
 <Note>
   The SDK will throw a validation error if you pass a number for `maxValue` or `minValue`. Always use strings for financial fields — this is intentional and enforced at runtime to prevent silent precision loss.
 </Note>
@@ -67,7 +83,7 @@ const intent = await client.createIntent('TradeIntent', buyPayload);
 const sellPayload = buildSellIntent('BTC', {
   currency: 'USD',
   minValue: '44000',
-  fiatMethod: 'SEPA',
+  fiatMethod: 'BANK_TRANSFER',
 });
 
 const intent = await client.createIntent('TradeIntent', sellPayload);
@@ -84,5 +100,5 @@ await client.cancelIntent(intent.id);
 Cancelling by mutual agreement always produces a `NEUTRAL` reputation outcome for both parties — a cancellation can never automatically generate a negative reputation impact on your counterparty.
 
 <Tip>
-  Use `agents.generateTradeIntent()` to let the QVAC on-device AI model generate an Intent payload from a natural-language goal — for example, "buy some BTC for around $500." The agent constructs a well-formed `TradeIntentPayload` on your behalf, within any spending limits you have configured. See the AI Agents guide for details.
+  Use `agents.generateTradeIntent()` to draft an Intent payload from a plain-language goal — for example, "buy some BTC for around \$500." It's a single model call that returns a draft for you to review before calling `createIntent()`. See the [AI Agents guide](/guides/ai-agents).
 </Tip>
