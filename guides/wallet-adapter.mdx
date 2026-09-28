@@ -1,0 +1,130 @@
+---
+title: "Integrate Your Wallet with the WalletAdapter Interface"
+sidebarTitle: "Wallet Adapter"
+description: "The WalletAdapter interface lets you connect any wallet — hardware, software, or custodial — to Sails Protocol by implementing seven methods."
+---
+
+The `WalletAdapter` interface is how you plug your existing wallet infrastructure into Sails Protocol. Once implemented, pass your adapter to `SailsClient` and all SDK methods that need signing or address resolution will use your wallet automatically. The interface is deliberately transport- and chain-agnostic: `asset` is a plain string, and transaction payloads are typed as `unknown`, so the same adapter shape works for Bitcoin, Lightning, EVM assets, and anything else.
+
+<Note>
+  The `wallet` parameter is optional. You can use Ed25519 keypairs directly — without a `WalletAdapter` — for simple integrations. The `WalletAdapter` is needed for hardware wallets, non-custodial on-chain signing flows, and any integration where raw secret keys must never leave the signing device.
+</Note>
+
+## The Interface
+
+Implement all seven methods to satisfy the `WalletAdapter` contract. Every method is async and returns a `Promise`.
+
+```typescript
+import type { WalletAdapter } from '@satsails/p2p-trading-sdk';
+
+interface WalletAdapter {
+  /** Your unique P2P network identifier */
+  getPeerId(): Promise<string>;
+  /** Return the deposit address for a given asset */
+  getAddress(asset: string): Promise<string>;
+  /** Return balance as a decimal string */
+  getBalance(asset: string): Promise<string>;
+  /** Sign a transaction — return format depends on asset type */
+  signTransaction(asset: string, tx: unknown): Promise<unknown>;
+  /** Broadcast a signed transaction — return the txid */
+  broadcastTransaction(asset: string, signedTx: unknown): Promise<string>;
+  /** Sign an Ed25519 challenge for authentication */
+  signMessage(message: Uint8Array): Promise<Uint8Array>;
+  /** Declare what assets and features this wallet supports */
+  getCapabilities(): Promise<WalletCapabilitiesDeclaration>;
+}
+```
+
+`getCapabilities()` returns a `WalletCapabilitiesDeclaration` describing which assets and fiat rails your wallet supports and whether it can participate in P2P trading and on-chain settlement. This declaration is used by the Capability Registry to derive the correct scope for your wallet's grants.
+
+## Implementing the Adapter
+
+Start with a minimal implementation that delegates each method to your existing wallet's API. The key constraints are:
+
+- `getBalance()` must return a **decimal string** (e.g. `'0.5'`), never a JavaScript number
+- `getAddress()` returns one address per asset — the same address the escrow settlement will pay out to
+- `signMessage()` must produce an Ed25519 signature over the raw `Uint8Array` challenge — this is what `identity.authenticateWithWallet()` uses
+
+```typescript
+class MyWalletAdapter implements WalletAdapter {
+  async getPeerId() {
+    return this.wallet.getNodePublicKey();
+  }
+
+  async getAddress(asset: string) {
+    return this.wallet.getAddress(asset);
+  }
+
+  async getBalance(asset: string) {
+    const balance = await this.wallet.getBalance(asset);
+    return balance.toString(); // Must be a decimal string
+  }
+
+  async signMessage(message: Uint8Array) {
+    return this.wallet.ed25519Sign(message);
+  }
+
+  async getCapabilities() {
+    return {
+      assets: ['BTC', 'USDT_ERC20'],
+      fiatRails: ['PIX', 'BANK_TRANSFER'],
+      supportsP2PTrading: true,
+      supportsOnchainSettlement: true,
+    };
+  }
+
+  // ... signTransaction, broadcastTransaction
+}
+```
+
+<Tip>
+  Use the `MockWalletAdapter` from `@satsails/p2p-trading-sdk` during development. It returns deterministic fake values so you can test wallet-backed registration and authentication without connecting a real wallet.
+</Tip>
+
+## Passing the Adapter to SailsClient
+
+Pass your adapter instance in the `SailsClient` constructor. From that point on, the SDK delegates signing, address resolution, and balance queries to your wallet instead of managing keys internally.
+
+```typescript
+const myAdapter = new MyWalletAdapter();
+
+const client = new SailsClient({
+  baseUrl: 'http://localhost:3000',
+  wallet: myAdapter,
+});
+
+// Wallet-backed registration — retrieve the public key from your adapter,
+// then register it with the node. The private key never leaves your wallet.
+const publicKeyHex = await myAdapter.getPeerId();
+const participant = await client.identity.createWithPublicKey(
+  publicKeyHex,
+  'My Wallet'
+);
+
+// Wallet-backed sign-in
+await client.identity.authenticateWithWallet(publicKeyHex, myAdapter);
+```
+
+`identity.createWithPublicKey()` registers a participant using only the public key — no keypair object is created and no secret key ever passes through the SDK. `identity.authenticateWithWallet()` completes the Ed25519 challenge-response flow entirely inside your adapter's `signMessage()` method.
+
+## Auto-Registering Capabilities
+
+Once authenticated, register a `CapabilityGrant` derived directly from your wallet's declared capabilities. This saves you from manually assembling a `capabilities.register()` call — the SDK reads `getCapabilities()` from your adapter and derives the correct scope automatically.
+
+```typescript
+// Registers a CapabilityGrant derived from your wallet's declared capabilities
+await client.capabilities.registerFromWallet(myAdapter);
+```
+
+The resulting grant is scoped to the assets and features your wallet declared. You can inspect active grants at any time with `capabilities.list(participantId)` and revoke individual grants with `capabilities.revoke(grantId)`.
+
+## Wallet Adapter vs. Direct Keypairs
+
+<CardGroup cols={2}>
+  <Card title="Direct Ed25519 Keypairs" icon="key" href="/guides/p2p-trade">
+    Simpler setup. Use `identity.create()` and `identity.authenticate()` with a keypair object. Best for scripts, bots, and integrations where holding a key in memory is acceptable.
+  </Card>
+  <Card title="WalletAdapter" icon="wallet" href="/guides/wallet-adapter">
+    Keys never leave the signing device. Use for hardware wallets, mobile wallets, and any integration where the secret key must be isolated. Required for `identity.authenticateWithWallet()`.
+  </Card>
+</CardGroup>

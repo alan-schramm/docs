@@ -1,0 +1,126 @@
+---
+title: "WebSocket API: Real-Time Trade Events and Messages"
+sidebarTitle: "WebSocket"
+description: "Connect to the Sails Protocol WebSocket endpoint for real-time trade messages, escrow status updates, and peer presence events using JSON message frames."
+---
+
+The Sails Protocol WebSocket endpoint at `/v1/openp2p/chat` provides real-time, bidirectional communication for trade negotiation. Both parties in a trade receive all events immediately — escrow status changes, chat messages, and risk warnings arrive as soon as they occur. The connection is authenticated by your participant ID passed as a query parameter, and you subscribe to individual trades using `JOIN_TRADE` messages after connecting.
+
+---
+
+## Connecting
+
+Connect to the WebSocket endpoint by appending your participant ID as a query parameter:
+
+```javascript
+const ws = new WebSocket(
+  'ws://localhost:3000/v1/openp2p/chat?userId=<your-participant-id>'
+);
+```
+
+The connection is persistent — you can join multiple trades on a single connection and receive events for all of them simultaneously. Use `LEAVE_TRADE` to unsubscribe from a specific trade without closing the connection.
+
+<Note>
+  If you are using the Sails SDK, the `client.openp2p.chat(tradeId)` method handles connection setup, authentication, and `JOIN_TRADE` automatically. You rarely need to manage the raw WebSocket directly.
+</Note>
+
+---
+
+## Client → Server Messages
+
+All messages sent to the server follow this JSON frame format:
+
+```json
+{
+  "type": "SEND_MESSAGE",
+  "payload": {
+    "tradeId": "trade_abc123",
+    "content": "Payment sent!",
+    "msgType": "TEXT"
+  }
+}
+```
+
+The following message types are supported:
+
+| Type | Payload | Description |
+|---|---|---|
+| `JOIN_TRADE` | `{ "tradeId": "..." }` | Subscribe to all events for a trade. You must join a trade before you can send or receive messages for it. |
+| `SEND_MESSAGE` | `{ "tradeId": "...", "content": "...", "msgType": "TEXT" }` | Send a chat message to your counterparty in the specified trade. |
+| `LEAVE_TRADE` | `{ "tradeId": "..." }` | Unsubscribe from a trade's events without closing the connection. |
+| `PING` | `{}` | Keep-alive heartbeat. The server responds with a `PONG` event. |
+
+---
+
+## Server → Client Events
+
+The server pushes events to your connection as they occur. Each event follows the same JSON frame shape as outgoing messages, with a `type` and a `payload` containing the event data.
+
+| Type | Description |
+|---|---|
+| `NEW_MESSAGE` | A new chat message arrived from your counterparty. |
+| `TRADE_STATUS_UPDATE` | The trade's status changed (e.g. from `ACTIVE` to `DISPUTED`). |
+| `ESCROW_STATUS_UPDATE` | The escrow's status changed (e.g. `FUNDS_LOCKED`, `PAYMENT_PENDING`, `COMPLETED`). Pushed automatically via the internal event bus. |
+| `RISK_WARNING` | QVAC's Social Engineering Agent detected a potential fraud pattern in the trade chat. Detection only — the trade is never automatically blocked or altered. |
+| `USER_ONLINE` | Your counterparty connected to the trade channel. |
+| `USER_OFFLINE` | Your counterparty disconnected. |
+| `PONG` | Response to a `PING` keep-alive message. |
+| `ERROR` | The server encountered an error processing your last message. The `payload` includes a human-readable `message` field. |
+
+<Warning>
+  A `RISK_WARNING` event means QVAC has flagged a potential social-engineering pattern — for example, a request to move the conversation off-channel, or a sudden change in payment instructions. Always treat these warnings seriously. The agent never blocks a trade on your behalf; the decision to proceed or abort is always yours.
+</Warning>
+
+---
+
+## Using the SDK
+
+The SDK's `WebSocketChannel` API wraps the raw WebSocket protocol with typed event handlers and automatic reconnection:
+
+```typescript
+const channel = client.openp2p.chat(tradeId);
+
+// Listen for chat messages
+channel.onMessage((msg) => {
+  console.log(`${msg.senderId}: ${msg.content}`);
+});
+
+// Listen for all server-pushed events
+channel.onEvent((event) => {
+  if (event.type === 'ESCROW_STATUS_UPDATE') {
+    console.log('Escrow status:', event.payload.status);
+  }
+  if (event.type === 'RISK_WARNING') {
+    alert('Potential fraud detected: ' + event.payload.warning);
+  }
+});
+
+// Send a chat message
+await channel.send({ content: 'I have sent the payment.' });
+
+// Monitor connection state
+channel.onConnectionStateChange((state) => {
+  console.log('Connection:', state); // 'connecting' | 'open' | 'closed'
+});
+
+// Unsubscribe from this trade but keep the WebSocket connection open
+channel.leave();
+
+// Disconnect entirely
+channel.close();
+```
+
+<Expandable title="Channel method reference">
+  | Method | Description |
+  |---|---|
+  | `channel.onMessage(handler)` | Register a handler called for each `NEW_MESSAGE` event. |
+  | `channel.onEvent(handler)` | Register a handler called for every server-pushed event, including status updates, risk warnings, and presence events. |
+  | `channel.send({ content })` | Send a `TEXT` message to the counterparty in this trade. |
+  | `channel.onConnectionStateChange(handler)` | Receive `'connecting'`, `'open'`, or `'closed'` state transitions. |
+  | `channel.leave()` | Send `LEAVE_TRADE` and stop receiving events for this trade. Does not close the underlying connection. |
+  | `channel.close()` | Close the WebSocket connection entirely. |
+</Expandable>
+
+<Tip>
+  If your client disconnects during a trade, use `client.openp2p.reconcileTrade(tradeId, sinceMessageCreatedAt)` to catch up on any messages you missed while offline. Pass the timestamp of the last message you received as `sinceMessageCreatedAt` to retrieve only the messages that arrived after your disconnection (RFC-011).
+</Tip>

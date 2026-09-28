@@ -1,0 +1,175 @@
+---
+title: "Escrow Lifecycle: Lock, Transfer, and Release Funds"
+sidebarTitle: "Escrow Lifecycle"
+description: "Understand Sails Protocol's five available escrow provider types (plus one reserved, not yet implemented), the escrow state machine, and client-held keys for non-custodial Bitcoin and Lightning."
+---
+
+Sails Protocol escrow is built around a non-custodial design for most settlement paths — funds typically flow through an escrow that neither Sails nor any counterparty can unilaterally drain. One disclosed exception: `WDK_USDT_EVM` is a server-custodial reference implementation (see below). The protocol defines five available escrow provider types — from a simple mock for development to on-chain Bitcoin multisig and Lightning HODL — plus one reserved type not yet implemented, so you can pick the trust model that fits your integration.
+
+## Escrow State Machine
+
+Every escrow moves through a defined sequence of states. The happy path runs left to right; disputes branch off from any locked state and rejoin at resolution.
+
+```text
+CREATED → FUNDS_LOCKED → PAYMENT_PENDING → COMPLETED
+                │                │
+                └────────────────┴──→ DISPUTED → RESOLVED
+                                                   ├── RELEASED
+                                                   └── REFUNDED
+```
+
+| State | Meaning |
+|---|---|
+| `CREATED` | Escrow record exists; no funds committed yet |
+| `FUNDS_LOCKED` | Seller has locked the asset; buyer can now send fiat |
+| `PAYMENT_PENDING` | Buyer has marked payment sent; seller is confirming receipt |
+| `COMPLETED` | Seller released funds; trade is fully settled |
+| `DISPUTED` | Either party opened a dispute; funds are frozen pending resolution |
+| `RESOLVED` | Arbiter or policy engine issued a ruling; funds were released or refunded |
+
+## Simple Escrow (MOCK / WDK\_USDT\_EVM)
+
+For development and EVM stablecoin flows, use the default escrow type. Leave `type` unset and the server picks `MOCK` on a local dev node (or `WDK_USDT_EVM` when configured). The create → lock → payment → release cycle is identical for both.
+
+**1. Create the escrow**
+
+```typescript
+const escrow = await client.settlement.create({
+  tradeId: trade.id,
+  lockedAmount: '0.01',
+  asset: 'BTC',
+  // type is omitted — server selects MOCK or WDK_USDT_EVM based on config
+});
+console.log('Escrow created:', escrow.id);
+```
+
+**2. Lock funds**
+
+```typescript
+await client.settlement.lock(escrow.id);
+console.log('Funds locked — buyer can now send payment');
+```
+
+**3. Mark payment sent**
+
+```typescript
+// Called by the buyer after sending fiat out-of-band
+await client.settlement.markPaymentSent(escrow.id);
+```
+
+**4. Release to buyer**
+
+```typescript
+// Called by the seller after confirming fiat receipt
+await client.settlement.release(escrow.id, 'bc1q...');
+console.log('Escrow released — trade complete');
+```
+
+## Non-Custodial Bitcoin (MULTISIG)
+
+The `MULTISIG` provider uses a 2-of-2 on-chain Bitcoin multisig address derived from buyer and seller public keys. Neither party — nor Sails — can spend the funds without both signatures. This requires you to generate a keypair, submit your public key, and co-sign the release PSBT client-side.
+
+<Warning>
+  Never share your escrow private key. It is separate from your identity keypair and must never leave the device that generated it. Anyone who obtains your escrow private key can co-sign an unauthorized release.
+</Warning>
+
+```typescript
+import { generateEscrowKeypair, signEscrowPsbt } from '@satsails/p2p-trading-sdk';
+
+// 1. Generate keypair (store privateKey securely!)
+const { publicKey, privateKey } = generateEscrowKeypair();
+
+// 2. Create escrow with type MULTISIG
+const escrow = await client.settlement.create({
+  tradeId: trade.id,
+  lockedAmount: '0.001',
+  asset: 'BTC',
+  type: 'MULTISIG',
+});
+
+// 3. Submit your public key
+await client.settlement.submitKey(escrow.id, publicKey);
+
+// 4. Lock funds (requires on-chain BTC send to the multisig address)
+await client.settlement.lock(escrow.id);
+
+// 5. Initiate release — creates an unsigned PSBT
+await client.settlement.initiateRelease(escrow.id, 'bc1q...');
+
+// 6. Get the pending transaction and sign it
+const pending = await client.settlement.getPendingTransaction(escrow.id);
+const signedPsbt = signEscrowPsbt(pending.unsignedPsbtBase64, privateKey);
+await client.settlement.submitTransactionSignature(escrow.id, signedPsbt);
+```
+
+<Note>
+  The multisig deposit address is derived only after **both** buyer and seller have called `submitKey()`. `Escrow.multisigAddr` will be `null` until both keys are on record — wait for both sides to submit before sending on-chain BTC to lock funds.
+</Note>
+
+Both parties must each call `submitKey()` with their own public key. Once both signatures are collected via `submitTransactionSignature()`, the PSBT is finalized and broadcast automatically. The response's `complete: true` field tells you the funds have moved.
+
+## Lightning HODL (LIGHTNING\_HODL)
+
+The `LIGHTNING_HODL` provider uses Arkade (Ark protocol) VTXO/Taproot escrow construction — not a classic Lightning hold-invoice/HTLC. The flow mirrors `MULTISIG` but signs an Ark transaction bundle instead of a PSBT. Use `signEscrowArkTx()` in place of `signEscrowPsbt()`.
+
+```typescript
+import { generateEscrowKeypair, signEscrowArkTx } from '@satsails/p2p-trading-sdk';
+
+const { publicKey, privateKey } = generateEscrowKeypair();
+
+const escrow = await client.settlement.create({
+  tradeId: trade.id,
+  lockedAmount: '0.001',
+  asset: 'LN_BTC',
+  type: 'LIGHTNING_HODL',
+});
+
+await client.settlement.submitKey(escrow.id, publicKey);
+await client.settlement.lock(escrow.id);
+
+await client.settlement.initiateRelease(escrow.id, 'bc1q...');
+
+const pending = await client.settlement.getPendingTransaction(escrow.id);
+// signEscrowArkTx is async — it returns a Promise
+const signedBundle = await signEscrowArkTx(pending.unsignedPsbtBase64, privateKey);
+await client.settlement.submitTransactionSignature(escrow.id, signedBundle);
+```
+
+<Warning>
+  As with `MULTISIG`, never share your escrow private key. The `generateEscrowKeypair()` helper returns the same secp256k1 key format for all non-custodial escrow types — keep the private key isolated from your identity keypair and any networked storage.
+</Warning>
+
+## Checking Escrow Status
+
+At any point, fetch the full escrow record including its event history to see the current state and a log of every transition.
+
+```typescript
+const escrow = await client.settlement.get(escrowId);
+console.log('Status:', escrow.status);
+console.log('Events:', escrow.events);
+```
+
+The `events` array contains every state transition with timestamps, giving you a complete audit trail from creation through completion or resolution.
+
+## Escrow Type Summary
+
+<CardGroup cols={2}>
+  <Card title="MOCK" icon="flask" href="/guides/escrow-lifecycle#simple-escrow-mock--wdk_usdt_evm">
+    Development and testing. No real funds move. Default on local dev nodes when `MOCK_ESCROW=true`.
+  </Card>
+  <Card title="MULTISIG" icon="bitcoin" href="/guides/escrow-lifecycle#non-custodial-bitcoin-multisig">
+    On-chain Bitcoin 2-of-2 multisig. Fully non-custodial. Requires real testnet or mainnet BTC.
+  </Card>
+  <Card title="LIGHTNING_HODL" icon="bolt" href="/guides/escrow-lifecycle#lightning-hodl-lightning_hodl">
+    Arkade (Ark protocol) VTXO/Taproot escrow, not a classic Lightning HTLC. Non-custodial, near-instant settlement.
+  </Card>
+  <Card title="WDK_USDT_EVM" icon="coins" href="/guides/escrow-lifecycle#simple-escrow-mock--wdk_usdt_evm">
+    EVM stablecoin settlement via Tether's Wallet Development Kit. Server-custodial reference implementation.
+  </Card>
+  <Card title="LIQUID_COVENANT" icon="droplets" href="/guides/escrow-lifecycle#escrow-type-summary">
+    Reserved — not yet implemented. No working provider exists for this escrow type today.
+  </Card>
+  <Card title="SAFE_GUARD_EVM" icon="shield" href="/guides/escrow-lifecycle#escrow-type-summary">
+    Non-custodial EVM settlement using Safe smart accounts (RFC-020). Requires a live EVM RPC and bundler.
+  </Card>
+</CardGroup>

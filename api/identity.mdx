@@ -1,0 +1,279 @@
+---
+title: "Sails OpenIdentity API: Participants and Authentication"
+sidebarTitle: "Identity"
+description: "REST endpoints for registering participants, issuing Ed25519 auth challenges, and retrieving participant profiles in Sails Protocol."
+---
+
+The OpenIdentity API is your entry point to the Sails Protocol. Every action on the network — publishing offers, opening trades, managing escrow — belongs to a registered participant identity. Sails uses **Ed25519 public-key cryptography**: you generate a keypair on your own device, register the public key here, and prove control by signing server-issued challenges. No passwords, no email verification, no central authority holds your credentials.
+
+<Note>
+  All financial amount fields in Sails Protocol are **decimal strings**, never JavaScript numbers. This preserves exact decimal precision across all languages and runtimes (RFC-009).
+</Note>
+
+---
+
+## Register a Participant
+
+<br />
+
+**`POST /v1/identity/participants`**
+
+Register a new participant identity using an Ed25519 public key. After registration, you can authenticate and begin interacting with the full Sails Protocol API.
+
+### Request Body
+
+<ParamField body="publicKey" type="string" required>
+  Your Ed25519 public key, hex-encoded (64 hex characters). Generate this client-side — never send your private key to the server.
+</ParamField>
+
+<ParamField body="displayName" type="string">
+  Optional human-readable name for your participant profile.
+</ParamField>
+
+### Response
+
+<ResponseField name="id" type="string">
+  Your unique participant ID. Use this to reference your identity across all Sails API modules.
+</ResponseField>
+
+<ResponseField name="publicKey" type="string">
+  The Ed25519 public key you registered, returned for confirmation.
+</ResponseField>
+
+<ResponseField name="displayName" type="string">
+  Your display name, if provided.
+</ResponseField>
+
+<ResponseField name="createdAt" type="string">
+  ISO 8601 timestamp of when the participant was registered.
+</ResponseField>
+
+<CodeGroup>
+```bash Request
+curl -X POST https://your-node.example.com/v1/identity/participants \
+  -H "Content-Type: application/json" \
+  -d '{
+    "publicKey": "a3f2e1d4c5b6a7980f1e2d3c4b5a69780f1e2d3c4b5a69780f1e2d3c4b5a6978",
+    "displayName": "alice_trader"
+  }'
+```
+
+```json Response
+{
+  "success": true,
+  "data": {
+    "id": "part_abc123",
+    "publicKey": "a3f2e1d4c5b6a7980f1e2d3c4b5a69780f1e2d3c4b5a69780f1e2d3c4b5a6978",
+    "displayName": "alice_trader",
+    "createdAt": "2025-01-15T10:00:00Z"
+  }
+}
+```
+</CodeGroup>
+
+---
+
+## Get a Participant Profile
+
+<br />
+
+**`GET /v1/identity/participants/:id`**
+
+Retrieve the public profile of any registered participant by their ID. This endpoint requires no authentication and is suitable for counterparty lookups.
+
+### Path Parameters
+
+<ParamField path="id" type="string" required>
+  The participant ID returned at registration.
+</ParamField>
+
+### Response
+
+Returns the same participant object shape as registration.
+
+<CodeGroup>
+```bash Request
+curl https://your-node.example.com/v1/identity/participants/part_abc123
+```
+
+```json Response
+{
+  "success": true,
+  "data": {
+    "id": "part_abc123",
+    "publicKey": "a3f2e1d4c5b6a7980f1e2d3c4b5a69780f1e2d3c4b5a69780f1e2d3c4b5a6978",
+    "displayName": "alice_trader",
+    "createdAt": "2025-01-15T10:00:00Z"
+  }
+}
+```
+</CodeGroup>
+
+---
+
+## Issue an Auth Challenge
+
+<br />
+
+**`POST /v1/identity/challenge`**
+
+Request a one-time challenge from the server. You sign this challenge with your Ed25519 private key and submit it to `POST /v1/identity/authenticate` to receive a session token. This two-step flow ensures the server never needs to know your private key.
+
+### Request Body
+
+<ParamField body="publicKey" type="string" required>
+  The hex-encoded Ed25519 public key of the participant requesting the challenge.
+</ParamField>
+
+### Response
+
+<ResponseField name="challenge" type="string">
+  A hex-encoded challenge string. Sign the raw bytes of this value with your private key using Ed25519 to produce the signature you will submit to the authenticate endpoint.
+</ResponseField>
+
+<ResponseField name="expiresIn" type="integer">
+  The number of seconds until this challenge expires. Request a fresh challenge and sign immediately — do not store challenges across sessions.
+</ResponseField>
+
+<CodeGroup>
+```bash Request
+curl -X POST https://your-node.example.com/v1/identity/challenge \
+  -H "Content-Type: application/json" \
+  -d '{ "publicKey": "a3f2e1d4c5b6a7980f1e2d3c4b5a69780f1e2d3c4b5a69780f1e2d3c4b5a6978" }'
+```
+
+```json Response
+{
+  "success": true,
+  "data": {
+    "challenge": "dGhpcyBpcyBhIHRlc3QgY2hhbGxlbmdl...",
+    "expiresIn": 300
+  }
+}
+```
+</CodeGroup>
+
+<Tip>
+  The Sails P2P Trading SDK (`@satsails/p2p-trading-sdk`) handles the challenge-sign-authenticate flow for you. Call it directly only if you are building a custom integration or a non-TypeScript client.
+</Tip>
+
+---
+
+## Authenticate and Get a Session Token
+
+<br />
+
+**`POST /v1/identity/authenticate`**
+
+Submit your signed challenge to verify ownership of the private key. On success, the server returns a session token and your participant ID. Include the token in the `Authorization` header for all protected endpoints.
+
+### Request Body
+
+<ParamField body="publicKey" type="string" required>
+  Your Ed25519 public key, hex-encoded.
+</ParamField>
+
+<ParamField body="signature" type="string" required>
+  The Ed25519 signature of the challenge bytes, hex-encoded. Sign the raw bytes of the challenge value — not the hex string itself.
+</ParamField>
+
+### Response
+
+<ResponseField name="participantId" type="string">
+  Your participant ID, confirming which identity was authenticated.
+</ResponseField>
+
+<ResponseField name="sessionToken" type="string">
+  A bearer token. Include this as `Authorization: Bearer <token>` on all authenticated requests.
+</ResponseField>
+
+<CodeGroup>
+```bash Request
+curl -X POST https://your-node.example.com/v1/identity/authenticate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "publicKey": "a3f2e1d4c5b6a7980f1e2d3c4b5a69780f1e2d3c4b5a69780f1e2d3c4b5a6978",
+    "signature": "9f3c1a2b4d5e6f708192a3b4c5d6e7f8..."
+  }'
+```
+
+```json Response
+{
+  "success": true,
+  "data": {
+    "participantId": "part_abc123",
+    "sessionToken": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..."
+  }
+}
+```
+</CodeGroup>
+
+<Warning>
+  Session tokens expire. If you receive a `401 AUTH_ERROR`, re-run the challenge → authenticate flow to obtain a fresh token. Never store or log the token alongside your private key.
+</Warning>
+
+---
+
+## Get Your Own Profile
+
+<br />
+
+**`GET /v1/identity/me`**
+
+Retrieve the profile of the currently authenticated participant. Your `participantId` is always derived from the session — never passed in the request.
+
+### Request Headers
+
+<ParamField header="Authorization" type="string" required>
+  `Bearer <sessionToken>` — obtained from `POST /v1/identity/authenticate`.
+</ParamField>
+
+### Response
+
+Returns your participant object, identical in shape to `GET /v1/identity/participants/:id`.
+
+<CodeGroup>
+```bash Request
+curl https://your-node.example.com/v1/identity/me \
+  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..."
+```
+
+```json Response
+{
+  "success": true,
+  "data": {
+    "id": "part_abc123",
+    "publicKey": "a3f2e1d4c5b6a7980f1e2d3c4b5a69780f1e2d3c4b5a69780f1e2d3c4b5a6978",
+    "displayName": "alice_trader",
+    "createdAt": "2025-01-15T10:00:00Z"
+  }
+}
+```
+</CodeGroup>
+
+---
+
+## Error Reference
+
+All error responses follow the standard Sails error shape:
+
+```json
+{
+  "success": false,
+  "error": "AUTH_ERROR",
+  "message": "Missing or invalid session token",
+  "details": [],
+  "requestId": "req-7f3a1c",
+  "docsUrl": "https://github.com/alan-schramm/Sails-Protocol/blob/main/docs/API_REFERENCE.md#9-error-response-shape"
+}
+```
+
+<Expandable title="Identity error codes">
+  | `error` | HTTP | When it occurs |
+  |---|---|---|
+  | `VALIDATION_ERROR` | 400 | `publicKey` or `signature` is malformed or missing |
+  | `AUTH_ERROR` | 401 | Challenge signature did not verify, no challenge was issued for this key, or the session token is missing/expired |
+  | `NOT_FOUND` | 404 | Participant ID does not exist |
+  | `RATE_LIMIT_EXCEEDED` | 429 | Too many authentication attempts — check `Retry-After` response header |
+  | `INTERNAL_ERROR` | 500 | Unexpected server error |
+</Expandable>

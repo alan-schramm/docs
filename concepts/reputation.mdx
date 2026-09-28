@@ -1,0 +1,90 @@
+---
+title: "Reputation Scores and Peer Trust in Sails Protocol"
+sidebarTitle: "Reputation"
+description: "Sails reputation scores are outcome-based and cryptographically tied to your identity rather than a platform account. Learn how scores are calculated."
+---
+
+Your reputation in Sails Protocol is tied to your Ed25519 identity — not to any platform, account, or email address. Scores are computed automatically from trade outcomes and cannot be faked or reset. This keypair binding is a real, current property of how scores are stored and computed. Carrying the same reputation across multiple independently-operated Sails deployments has not yet been demonstrated in production — a Sails deployment is currently self-hosted with no shared cloud endpoint (see the [Introduction](/introduction)).
+
+## How Scores Are Calculated
+
+Your overall `ReputationScore` is a composite number from 0 to 100, computed exclusively from real settlement outcomes. Peer star ratings are recorded for display purposes only — they never influence the computed score.
+
+<Accordion title="tradeScore — trade completion rate">
+  Measures how reliably you follow through on trades you start. Each completed settlement contributes positively; each abandoned or failed trade contributes negatively. A mutually-agreed cancellation always classifies as `NEUTRAL` — it can never lower your score.
+</Accordion>
+
+<Accordion title="volumeScore — cumulative trading volume">
+  Reflects the total value of trades you have settled. Higher volume signals that you are an active, experienced participant rather than a first-time user. Volume is tracked in aggregate — individual trade amounts are not surfaced to other participants.
+</Accordion>
+
+<Accordion title="settlementScore — escrow resolution quality">
+  Measures how cleanly your escrows resolve. A settlement that completes on the happy path (no dispute, no delay) scores higher than one that requires intervention or takes an extended time to release.
+</Accordion>
+
+<Accordion title="disputeRate — percentage of disputed trades">
+  The fraction of your trades that escalated to the Dispute primitive. Lower is better. A high dispute rate is the single strongest signal that other participants will see when deciding whether to trade with you.
+</Accordion>
+
+<Note>
+  The `reputation.rate()` method lets you submit a 1–5 star rating after a trade completes. This rating is stored and displayed to your counterparty as informational feedback, but it does **not** affect the computed `ReputationScore`. Only real settlement outcomes can move the score. This design prevents a bad actor from leaving punitive ratings after cancelling in bad faith.
+</Note>
+
+## Fetching a Reputation Score
+
+```typescript
+const score = await client.reputation.get(participantId);
+console.log('Overall:', score.total);              // 0–100
+console.log('Trade Score:', score.tradeScore);
+console.log('Volume Score:', score.volumeScore);
+console.log('Settlement Score:', score.settlementScore);
+console.log('Dispute Rate:', score.disputeRate);   // lower is better
+```
+
+The `total` field is the weighted composite. Use it as your primary trust signal when deciding whether to trade with a counterparty.
+
+## Submitting a Rating
+
+After a trade completes, you can submit a star rating as informational feedback for your counterparty. Ratings are stored and displayed but do not affect the computed score.
+
+```typescript
+await client.reputation.rate({
+  tradeId: trade.id,
+  ratedId: counterpartyId,
+  score: 5,              // 1–5 stars
+  comment: 'Fast and reliable trader.',
+});
+```
+
+## Leaderboard
+
+Fetch the top-ranked participants by composite score. This is useful for surfacing highly trusted liquidity providers in your UI.
+
+```typescript
+const result = await client.reputation.leaderboard({ limit: 10 });
+result.items.forEach(entry => {
+  console.log(entry.displayName, '→', entry.reputationScore);
+});
+```
+
+## Vouching
+
+You can stake your own reputation to vouch for another participant. Vouching is a strong public signal — it tells counterparties that you have first-hand experience with this person and are willing to be held accountable for your endorsement.
+
+```typescript
+await client.reputation.vouchFor(participantId);
+```
+
+<Warning>
+  Vouching carries real risk. If the participant you vouch for later abuses their first payment account, your own reputation score is penalized. Only vouch for participants you have traded with directly and trust based on real experience.
+</Warning>
+
+You can also look up a participant's reputation by their P2P peer ID, which is useful when you have their network identity but not their participant ID:
+
+```typescript
+const peerScore = await client.reputation.getScoreByPeerId(peerId);
+```
+
+<Tip>
+  Display reputation information in your UI using the `<ReputationBadge>` component from `@satsails/sdk-react`. It renders the composite score, dispute rate, and verification level in a consistent format — and updates automatically when the score changes.
+</Tip>

@@ -1,0 +1,178 @@
+---
+title: "Authenticate with Sails Protocol API: Ed25519 Flow"
+sidebarTitle: "Authentication"
+description: "Set up Ed25519 authentication with Sails Protocol: register a public key, request a challenge, sign it, and use the session token."
+---
+
+Sails Protocol authenticates requests using Ed25519 cryptographic signatures. You register a public key as your identity, sign a server-issued challenge, and receive a session token — no passwords or API keys involved. The server never sees your private key at any point in this process.
+
+## Step-by-Step Authentication
+
+<Steps>
+
+### Register a Participant
+
+Create your identity on the node by posting your Ed25519 public key. If you are using the SDK, it can generate a keypair for you (see [Using the SDK](#using-the-sdk) below). If you are integrating a wallet, register only the public key using `POST /v1/identity/participants`.
+
+<CodeGroup>
+```bash cURL
+POST /v1/identity/participants
+Content-Type: application/json
+
+{
+  "publicKey": "<your_ed25519_public_key_hex>",
+  "displayName": "My App"
+}
+```
+</CodeGroup>
+
+The node responds with your new participant record:
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "part_abc123",
+    "publicKey": "<your_ed25519_public_key_hex>",
+    "displayName": "My App",
+    "createdAt": "2025-01-15T10:00:00Z"
+  }
+}
+```
+
+Save the `id` — you will use it to look up your profile and reputation later. This step is only required once per key; re-registering the same public key returns a `VALIDATION_ERROR`.
+
+### Request a Challenge
+
+Ask the server to issue a one-time challenge for your public key. The challenge is short-lived, so request it immediately before signing.
+
+<CodeGroup>
+```bash cURL
+POST /v1/identity/challenge
+Content-Type: application/json
+
+{
+  "publicKey": "<your_ed25519_public_key_hex>"
+}
+```
+</CodeGroup>
+
+Response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "challenge": "base64-encoded-challenge-bytes",
+    "expiresIn": 300
+  }
+}
+```
+
+`expiresIn` is the number of seconds until the challenge expires. Decode the `challenge` value from hex to raw bytes before signing.
+
+### Sign the Challenge and Authenticate
+
+Sign the raw challenge bytes with your Ed25519 private key, then submit the hex-encoded signature to authenticate:
+
+<CodeGroup>
+```bash cURL
+POST /v1/identity/authenticate
+Content-Type: application/json
+
+{
+  "publicKey": "<your_ed25519_public_key_hex>",
+  "signature": "<hex-encoded ed25519 signature of the challenge>"
+}
+```
+</CodeGroup>
+
+On success, the server returns a session token and your participant ID:
+
+```json
+{
+  "success": true,
+  "data": {
+    "participantId": "part_abc123",
+    "sessionToken": "eyJ..."
+  }
+}
+```
+
+Store the `sessionToken` securely in your application. You will attach it to every subsequent request.
+
+### Pass the Token on Subsequent Requests
+
+Include the session token in the `Authorization` header on every authenticated API call:
+
+<CodeGroup>
+```bash cURL
+GET /v1/identity/me
+Authorization: Bearer eyJ...
+```
+</CodeGroup>
+
+Any endpoint that returns `AUTH_ERROR` (HTTP 401) means the token is missing or no longer valid. Repeat Steps 2 and 3 to obtain a fresh token.
+
+</Steps>
+
+## Using the SDK
+
+If you are building with the `@satsails/p2p-trading-sdk`, the entire three-step flow — key generation, challenge request, and signature submission — is handled automatically:
+
+```typescript
+import { SailsClient } from '@satsails/p2p-trading-sdk';
+
+const client = new SailsClient({ baseUrl: 'http://localhost:3000' });
+
+// Steps 1–3 happen in a single call: generates a keypair, registers
+// the participant, requests a challenge, signs it, and authenticates.
+const { participant, keypair } = await client.identity.create(undefined, 'My App');
+await client.identity.authenticate(keypair);
+
+// The session token is now stored on the client and attached automatically
+// to every subsequent request made through any module.
+const me = await client.identity.me();
+```
+
+If your application manages its own wallet and already holds an Ed25519 key, use `createWithPublicKey` and `authenticateWithWallet` instead — these flows never expose a raw secret key to the SDK:
+
+```typescript
+const participant = await client.identity.createWithPublicKey(publicKeyHex, 'My App');
+
+await client.identity.authenticateWithWallet(publicKeyHex, {
+  signMessage: async (message: Uint8Array) => wallet.sign(message),
+});
+```
+
+You can also access the session token directly if you need to persist or transfer it:
+
+```typescript
+const token = client.getSessionToken();
+client.setSessionToken(token); // restore on a new client instance
+```
+
+## Session Token
+
+The session token returned by `POST /v1/identity/authenticate` is an opaque bearer token bound to your `participantId`. It is valid for the duration of your session. The SDK stores and attaches it automatically to every request — you do not need to manage it manually when using the SDK.
+
+For direct HTTP integrations, pass the token on every authenticated request using the `Authorization` header:
+
+```
+Authorization: Bearer <your-session-token>
+```
+
+When the token expires or becomes invalid, the API returns HTTP 401 with error code `AUTH_ERROR`. Re-authenticate by requesting a new challenge (Step 2) and submitting a fresh signature (Step 3).
+
+## Error Codes
+
+| Code | HTTP Status | Description |
+|---|---|---|
+| `VALIDATION_ERROR` | 400 | `publicKey` or `signature` field is malformed or missing |
+| `AUTH_ERROR` | 401 | Challenge signature did not verify, no challenge was issued for this key, or the session token is missing/expired |
+| `NOT_FOUND` | 404 | No participant is registered for the provided public key — complete Step 1 first |
+| `RATE_LIMIT_EXCEEDED` | 429 | Too many authentication attempts — check `Retry-After` response header |
+
+<Warning>
+  Never share your private key. The Sails server only ever sees your public key and the Ed25519 signature of a one-time challenge — your private key never leaves your device.
+</Warning>

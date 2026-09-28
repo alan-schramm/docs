@@ -1,0 +1,110 @@
+---
+title: "Dispute Resolution and Arbitration in Sails Protocol"
+sidebarTitle: "Disputes"
+description: "Open, evidence, and resolve trade disputes in Sails Protocol — from automated policy checks through community arbiters to final appeal."
+---
+
+When a trade goes wrong, Sails Protocol's structured dispute resolution ensures neither party is left without recourse. Disputes escalate through defined stages: Policy Engine automation, AI agent assessment, and human arbiters. Crucially, the escalation moves from cheapest to most expensive — most disputes are expected to resolve before ever reaching a human arbiter.
+
+## Dispute Escalation Stages
+
+Every dispute follows this escalation order. Each stage can fully resolve the dispute and stop the escalation:
+
+1. **Policy Engine** — Automated rules run immediately on opening (e.g. timeout exceeded, contradictory proofs submitted, blacklisted payment method). If a rule matches, the dispute resolves without human involvement.
+
+2. **OpenAgents** — If policy rules don't resolve it, an on-device QVAC AI evaluates the submitted evidence and suggests a ruling. The parties can accept the automated proposal or contest it within the deadline window.
+
+3. **Trusted Arbiter** — A registered human arbiter reviews the evidence bundle and issues a binding ruling (`RELEASE`, `REFUND`, or `SPLIT`). The arbiter is assigned from the node's `TRUSTED_ARBITRATORS` list.
+
+4. **Appeal** — Either party can appeal a resolved dispute once. An appeal convenes a larger, reputation-weighted arbiter panel and requires an appeal fee.
+
+<Note>
+  Dispute resolution requires that the Sails node is configured with trusted arbiters. Contact your node operator to confirm arbitration is available before relying on it in production. A fresh local dev node has `TRUSTED_ARBITRATORS` empty by design — see the [escrow arbitration example](https://github.com/alan-schramm/sails-integration-starter/blob/main/examples/escrow-with-arbitration.ts) for first-time setup instructions.
+</Note>
+
+## Opening a Dispute
+
+Either the buyer or seller can open a dispute on a locked escrow by calling `settlement.dispute()`. Provide a clear reason — this is the first piece of evidence the policy engine and any arbiter will see.
+
+```typescript
+const dispute = await buyer.settlement.dispute(
+  escrow.id,
+  'Seller did not respond after payment was sent.',
+  [{ type: 'payment_screenshot', uri: 'https://example.com/proof.png' }]  // optional evidence array
+);
+console.log('Dispute ID:', dispute.id);
+```
+
+The call transitions the escrow to `DISPUTED`, freezing funds, and assigns an arbiter from the node's trusted list. The `dispute.id` returned here is the identifier you'll use for all subsequent evidence and resolution calls.
+
+<Tip>
+  Submit payment proof using `proof.submitProof()` before opening a dispute — this strengthens your case and can trigger automated resolution in your favor. A submitted proof is fingerprinted by the Protocol's Proof Registry; reuse of the same screenshot across multiple disputes is automatically flagged.
+</Tip>
+
+## Submitting Evidence
+
+After opening a dispute, either party can attach additional evidence at any time while the dispute is in `OPENED` or `EVIDENCE_SUBMITTED` status. Each call transitions the dispute to `EVIDENCE_SUBMITTED` and may trigger a new QVAC auto-resolution attempt on the server.
+
+```typescript
+await client.settlement.submitDisputeEvidence(dispute.id, {
+  type: 'payment_screenshot',
+  uri: 'https://example.com/proof.png',
+  note: 'Bank transfer confirmation',
+});
+```
+
+Submit evidence early and clearly. Arbiters and the policy engine both read the full evidence bundle when evaluating a case.
+
+## Arbiter Resolution
+
+Once the dispute reaches the human arbitration stage, the assigned arbiter reviews the evidence and calls `resolveDispute()`. Only the assigned arbiter can call this endpoint — any other caller receives a `403`.
+
+```typescript
+// Called by the arbiter
+await arbiterClient.settlement.resolveDispute(
+  dispute.id,
+  'RELEASE',                // RELEASE | REFUND | SPLIT
+  'buyer-payout-address'
+);
+```
+
+| Ruling | Effect |
+|---|---|
+| `RELEASE` | Funds are released to the buyer's payout address |
+| `REFUND` | Funds are returned to the seller |
+| `SPLIT` | Funds are divided between both parties (specify `splitBuyerBps` for the buyer's share in basis points) |
+
+The ruling triggers the same `releaseFunds()` path as a normal settlement release — the escrow transitions to `COMPLETED` or `REFUNDED` and a `txReleaseId` is recorded.
+
+## Contesting Automated Resolution
+
+When the QVAC AI proposes an automated ruling, the dispute enters `AUTO_PROPOSED` status. Either party has until `autoResolutionDeadline` to contest it. If you believe the automated ruling is incorrect, call `contestAutoResolution()` to reject it and fall back to the assigned human arbiter.
+
+```typescript
+// Reject a proposed automated ruling
+await client.settlement.contestAutoResolution(dispute.id);
+```
+
+Contesting reverts the dispute to `EVIDENCE_SUBMITTED` and routes it to the already-assigned human arbiter. No new arbiter is assigned. Once the `autoResolutionDeadline` passes, the automated ruling becomes final and cannot be contested.
+
+## Appealing a Decision
+
+After a dispute is `RESOLVED`, either trade party can appeal the ruling once. An appeal convenes a larger arbiter panel weighted by reputation score. Appeals require a fee (`appealFeeRequired` in the response) that is forfeited if the original ruling stands or refunded if the panel overturns it.
+
+```typescript
+await client.settlement.appealDispute(dispute.id);
+```
+
+<Note>
+  Appeals are only available when the Sails node is running in `ARBITRATION_MODE=market`. Check with your node operator before building UI that surfaces the appeal option to users.
+</Note>
+
+## Dispute Status Reference
+
+| Status | Meaning |
+|---|---|
+| `OPENED` | Dispute raised; evidence window open; policy engine running |
+| `EVIDENCE_SUBMITTED` | At least one party has submitted evidence; QVAC may be evaluating |
+| `AUTO_PROPOSED` | QVAC has suggested a ruling; parties can accept or contest before the deadline |
+| `ARBITRATED` | A human arbiter has reviewed the case |
+| `RESOLVED` | Final ruling issued; settlement executed |

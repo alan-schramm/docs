@@ -1,0 +1,446 @@
+---
+title: "React SDK: Hooks and Components for Sails Protocol"
+sidebarTitle: "React Hooks"
+description: "@satsails/sdk-react provides TanStack Query-powered hooks and ready-made React components for building P2P trading UIs on top of Sails Protocol."
+---
+
+`@satsails/sdk-react` wraps the Sails Protocol SDK in TanStack Query hooks and ready-to-use React components. It handles caching, background refetching, optimistic updates, and connection state so you can focus on your UI. Install it alongside `@tanstack/react-query` — see [Installation](/sdk/installation) for the package commands.
+
+## Provider Setup
+
+Wrap your application with both `QueryClientProvider` (from TanStack Query) and `SailsProvider` (from this package). `SailsProvider` makes the `SailsClient` instance available to every hook in the tree without prop drilling.
+
+```tsx
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { SailsProvider } from '@satsails/sdk-react';
+import { SailsClient } from '@satsails/p2p-trading-sdk';
+
+const queryClient = new QueryClient();
+const sailsClient = new SailsClient({
+  baseUrl: process.env.NEXT_PUBLIC_SAILS_BASE_URL!,
+});
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <SailsProvider client={sailsClient}>
+        {children}
+      </SailsProvider>
+    </QueryClientProvider>
+  );
+}
+```
+
+Place this `Providers` wrapper at the root of your app — in Next.js App Router, that is your root `layout.tsx`.
+
+<Tip>
+  Construct `SailsClient` and `QueryClient` outside the component body so they are created only once per application lifetime, not on every render.
+</Tip>
+
+---
+
+## `useSailsTrade`
+
+Fetches a single trade by ID. Backed by a TanStack Query `useQuery` — the result is cached and kept in sync with background refetching.
+
+```tsx
+import { useSailsTrade } from '@satsails/sdk-react';
+
+function TradeDetail({ tradeId }: { tradeId: string }) {
+  const { data: trade, isLoading } = useSailsTrade(tradeId);
+
+  if (isLoading) return <Skeleton />;
+  return <TradeCard trade={trade} />;
+}
+```
+
+The hook calls `client.openp2p.getTrade(tradeId)` under the hood. It re-fetches automatically when the component mounts and when the window regains focus. Pass `undefined` as `tradeId` to keep the query disabled until the ID resolves.
+
+---
+
+## `useSailsTrades`
+
+Fetches a paginated list of the authenticated user's trades. Uses TanStack Query's `useInfiniteQuery` so you can load additional pages on demand.
+
+```tsx
+import { useSailsTrades } from '@satsails/sdk-react';
+
+function TradeList() {
+  const { data, fetchNextPage, hasNextPage } = useSailsTrades({ limit: 20 });
+  const trades = data?.pages.flatMap(p => p.trades) ?? [];
+
+  return (
+    <div>
+      {trades.map(t => <TradeCard key={t.id} trade={t} />)}
+      {hasNextPage && (
+        <button onClick={() => fetchNextPage()}>Load more</button>
+      )}
+    </div>
+  );
+}
+```
+
+<Note>
+  `useSailsTrades` requires an authenticated session. Make sure `client.identity.authenticate()` or `client.identity.authenticateWithWallet()` has been called before rendering components that use this hook.
+</Note>
+
+---
+
+## `useSailsEscrow`
+
+Fetches an escrow and exposes pre-wired mutations for every lifecycle transition. Each mutation calls the corresponding `client.settlement` method and automatically invalidates the escrow query cache on success, so your UI stays in sync without manual refetching.
+
+```tsx
+import { useSailsEscrow } from '@satsails/sdk-react';
+
+function EscrowPanel({ escrowId }: { escrowId: string }) {
+  const { query, lock, markPaymentSent, release, refund, dispute } =
+    useSailsEscrow(escrowId);
+
+  return (
+    <div>
+      <EscrowStatusBadge status={query.data?.status} />
+      <button onClick={() => lock.mutate()}>
+        Lock Funds
+      </button>
+      <button onClick={() => markPaymentSent.mutate()}>
+        Payment Sent
+      </button>
+      <button onClick={() => release.mutate('bc1q...')}>
+        Release
+      </button>
+    </div>
+  );
+}
+```
+
+The hook exposes the following mutations:
+
+| Mutation | Calls | Description |
+|---|---|---|
+| `lock` | `settlement.lock(escrowId)` | Lock funds into escrow |
+| `markPaymentSent` | `settlement.markPaymentSent(escrowId)` | Buyer marks off-chain payment as sent |
+| `release` | `settlement.release(escrowId, toAddress)` | Release funds to the buyer — pass `toAddress` string to `mutate()` |
+| `refund` | `settlement.refund(escrowId)` | Refund funds to the seller |
+| `dispute` | `settlement.dispute(escrowId, reason, evidence?)` | Open a dispute — pass `{ reason, evidence? }` to `mutate()` |
+
+<Note>
+  All mutations from `useSailsEscrow` automatically invalidate the escrow query cache, so your UI reflects the updated status immediately after a mutation succeeds — no manual `refetch()` call needed.
+</Note>
+
+---
+
+## `useSailsIdentity`
+
+Wraps all identity module methods — participant creation, challenge-response authentication, and wallet-backed sign-in — as TanStack Query mutations. The `query` field fetches the participant's public profile by ID.
+
+```tsx
+import { useSailsIdentity } from '@satsails/sdk-react';
+
+function AuthFlow() {
+  const { query, create, authenticate } = useSailsIdentity(undefined);
+
+  const handleSignUp = async () => {
+    const { participant, keypair } = await create.mutateAsync({});
+    // Store keypair.secretKey securely — it cannot be recovered later
+    await authenticate.mutateAsync(keypair);
+  };
+
+  return <button onClick={handleSignUp}>Create Account</button>;
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `query` | `UseQueryResult<Participant>` | Fetches the participant's public profile. Disabled when `participantId` is `undefined`. |
+| `create` | mutation | Calls `identity.create(keypair?, displayName?)` |
+| `createWithPublicKey` | mutation | Calls `identity.createWithPublicKey(publicKeyHex, displayName?)` — wallet-backed, no raw secret key |
+| `challenge` | mutation | Calls `identity.challenge(publicKeyHex)` |
+| `authenticate` | mutation | Calls `identity.authenticate(keypair)` and stores the session token |
+| `authenticateWithWallet` | mutation | Calls `identity.authenticateWithWallet(publicKeyHex, wallet)` |
+
+---
+
+## `useSailsLiquidity`
+
+Wraps offer read and management methods for a specific offer. The `query` field fetches a single offer by ID; `book` and `match` provide order-book and best-match reads; `publish` and `updateStatus` are authenticated mutations.
+
+```tsx
+import { useSailsLiquidity } from '@satsails/sdk-react';
+
+function OfferDetail({ offerId }: { offerId: string }) {
+  const { query, updateStatus } = useSailsLiquidity(offerId);
+
+  return (
+    <div>
+      <p>{query.data?.asset} — {query.data?.priceUsd}</p>
+      <button onClick={() => updateStatus.mutate({ offerId, status: 'PAUSED' })}>
+        Pause Offer
+      </button>
+    </div>
+  );
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `query` | `UseQueryResult<Offer>` | Fetches one offer via `liquidity.getOffer(offerId)`. Disabled when `offerId` is `undefined`. |
+| `book` | `UseQueryResult<OrderBook>` | Fetches the order book for `options.bookAsset` (default `"BTC"`) |
+| `match` | `UseQueryResult<LiquidityOfferSummary \| null>` | Finds the best matching offer for `options.matchInput` |
+| `publish` | mutation | Calls `liquidity.publish(input)` — requires session |
+| `updateStatus` | mutation | Calls `liquidity.updateStatus(offerId, status)` — requires session |
+
+---
+
+## `useSailsLiquidityDiscover`
+
+Fetches a filtered list of offers from `liquidity.discover()`. Use this when you need a live, reactive offer list in a component — it re-fetches automatically on mount and focus.
+
+```tsx
+import { useSailsLiquidityDiscover } from '@satsails/sdk-react';
+
+function OfferList() {
+  const { data, isLoading } = useSailsLiquidityDiscover({
+    asset: 'BTC',
+    side: 'SELL',
+    limit: 20,
+  });
+
+  if (isLoading) return <Skeleton />;
+  return (
+    <ul>
+      {data?.offers.map(o => (
+        <li key={o.id}>{o.priceUsd} — {o.paymentMethods.join(', ')}</li>
+      ))}
+    </ul>
+  );
+}
+```
+
+The hook returns a standard `UseQueryResult<DiscoverResult>`. `DiscoverResult` contains `offers`, `sources`, `total`, and `hasMore`.
+
+---
+
+## `useSailsReputation`
+
+Fetches a participant's reputation score and leaderboard, and exposes `rate` and `vouchFor` mutations.
+
+```tsx
+import { useSailsReputation } from '@satsails/sdk-react';
+
+function ReputationPanel({ participantId }: { participantId: string }) {
+  const { query, rate } = useSailsReputation(participantId);
+  const score = query.data;
+
+  return (
+    <div>
+      <ReputationBadge participantId={participantId} />
+      <p>Trade score: {score?.tradeScore} / Settlement score: {score?.settlementScore}</p>
+      <button onClick={() => rate.mutate({ tradeId: '...', ratedId: participantId, score: 5 })}>
+        Rate
+      </button>
+    </div>
+  );
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `query` | `UseQueryResult<ReputationScore>` | Fetches the participant's full reputation score |
+| `leaderboard` | `UseQueryResult<LeaderboardResult>` | Fetches the top participants by reputation |
+| `rate` | mutation | Calls `reputation.rate(input)` — informational only, does not affect the computed score |
+| `vouchFor` | mutation | Calls `reputation.vouchFor(voucheeId)` — requires session |
+
+<Warning>
+  The `rate` mutation stores feedback but does **not** affect the `ReputationScore` returned by `query`. Scores are computed solely from settlement outcomes (RFC-007 D8). Do not build UI that implies rating affects someone's reputation score.
+</Warning>
+
+---
+
+## `useSailsCapabilities`
+
+Wraps RFC-013 Capability Registry operations — listing, registering, revoking, and wallet-derived capability grants.
+
+```tsx
+import { useSailsCapabilities } from '@satsails/sdk-react';
+
+function CapabilitiesPanel({ participantId }: { participantId: string }) {
+  const { query, register, revoke } = useSailsCapabilities(participantId);
+
+  return (
+    <div>
+      {query.data?.map(grant => (
+        <div key={grant.grantId}>
+          {grant.capabilityName}
+          <button onClick={() => revoke.mutate(grant.grantId)}>Revoke</button>
+        </div>
+      ))}
+      <button onClick={() => register.mutate({
+        capabilityName: 'p2p-trading',
+        scope: ['trade:create', 'escrow:lock'],
+      })}>
+        Register
+      </button>
+    </div>
+  );
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `query` | `UseQueryResult<CapabilityGrant[]>` | Lists all grants for the participant |
+| `register` | mutation | Calls `capabilities.register(input)` |
+| `revoke` | mutation | Calls `capabilities.revoke(grantId)` |
+| `registerFromWallet` | mutation | Calls `capabilities.registerFromWallet(wallet)` — derives scope from the wallet's own capabilities declaration |
+
+---
+
+## `useSailsProof`
+
+Wraps RFC-006/RFC-007 proof operations — asserting claims, submitting evidence, issuing verification nonces, verifying proofs, and reading evidence bundles.
+
+```tsx
+import { useSailsProof } from '@satsails/sdk-react';
+
+function ProofPanel({ claimId }: { claimId: string }) {
+  const { getEvidenceBundle, assertClaim, submitProof } = useSailsProof(claimId, undefined);
+
+  const bundle = getEvidenceBundle.data;
+
+  return (
+    <div>
+      <p>Claim type: {bundle?.claim.claimType}</p>
+      <p>Proofs submitted: {bundle?.proofs.length}</p>
+      <button onClick={() => assertClaim.mutate({
+        claimType: 'payment_sent',
+        assertion: { amount: '500.00', currency: 'BRL' },
+      })}>
+        Assert Claim
+      </button>
+    </div>
+  );
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `getEvidenceBundle` | `UseQueryResult<EvidenceBundle>` | Fetches the full evidence bundle for `claimId`. Disabled when `claimId` is `undefined`. |
+| `assertClaim` | mutation | Calls `proof.assertClaim(input)` — requires session |
+| `submitProof` | mutation | Calls `proof.submitProof(input)` — requires session |
+| `issueVerificationNonce` | mutation | Calls `proof.issueVerificationNonce(proofId)` — requires session |
+| `verifyProof` | mutation | Calls `proof.verifyProof(proofId, input)` — requires session |
+
+---
+
+## UI Components
+
+`@satsails/sdk-react` ships ready-to-use components for the most common P2P trading UI patterns. Import them alongside the hooks — no extra configuration required.
+
+<CardGroup cols={2}>
+  <Card title="TradeCard" icon="rectangle-history" href="/sdk/react-hooks#tradecard">
+    Renders a full trade card showing status, asset, amount, and counterparty.
+    ```tsx
+    <TradeCard trade={trade} />
+    ```
+  </Card>
+  <Card title="TradeStatusBadge" icon="circle-dot" href="/sdk/react-hooks#tradestatusbadge">
+    A colored pill showing the current trade status (e.g. `ACTIVE`, `CANCELLED`).
+    ```tsx
+    <TradeStatusBadge status={trade.status} />
+    ```
+  </Card>
+  <Card title="EscrowStatusBadge" icon="lock" href="/sdk/react-hooks#escrowstatusbadge">
+    A colored pill showing the current escrow status (e.g. `LOCKED`, `RELEASED`).
+    ```tsx
+    <EscrowStatusBadge status={escrow.status} />
+    ```
+  </Card>
+  <Card title="ReputationBadge" icon="star" href="/sdk/react-hooks#reputationbadge">
+    Fetches and displays a participant's trust score inline.
+    ```tsx
+    <ReputationBadge participantId={id} />
+    ```
+  </Card>
+  <Card title="Skeleton" icon="spinner" href="/sdk/react-hooks#skeleton">
+    A loading placeholder that matches the dimensions of the content it replaces.
+    ```tsx
+    <Skeleton />
+    ```
+  </Card>
+  <Card title="Toast system" icon="bell" href="/sdk/react-hooks#toast-setup">
+    A `<ToastProvider>` wrapper, a `useToast()` hook, and a `<Toast>` component for in-app notifications.
+    ```tsx
+    const { toast } = useToast();
+    toast({ title: 'Trade opened', description: tradeId });
+    ```
+  </Card>
+</CardGroup>
+
+### Toast Setup
+
+Wrap your app (inside `Providers`) with `<ToastProvider>` to enable the toast notification system:
+
+```tsx
+import { ToastProvider } from '@satsails/sdk-react';
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <SailsProvider client={sailsClient}>
+        <ToastProvider>
+          {children}
+        </ToastProvider>
+      </SailsProvider>
+    </QueryClientProvider>
+  );
+}
+```
+
+Then call `useToast()` anywhere in the tree:
+
+```tsx
+import { useToast } from '@satsails/sdk-react';
+
+function OpenTradeButton({ offerId }: { offerId: string }) {
+  const client = useSailsClient();
+  const { toast } = useToast();
+
+  const handleClick = async () => {
+    const trade = await client.openp2p.trade(offerId, '0.001');
+    toast({ title: 'Trade opened', description: `Trade ID: ${trade.id}` });
+  };
+
+  return <button onClick={handleClick}>Open Trade</button>;
+}
+```
+
+---
+
+## Accessing the Raw Client
+
+When you need to call a method that does not have a dedicated hook, use `useSailsClient()` to access the full `SailsClient` instance directly. For direct context access without the null-check wrapper, `useSailsContext()` returns the same instance — it is the low-level accessor that all hooks in this package call internally.
+
+```tsx
+import { useSailsClient } from '@satsails/sdk-react';
+
+function OfferDiscovery() {
+  const client = useSailsClient();
+
+  const handleSearch = async () => {
+    const { offers, sources, total, hasMore } = await client.liquidity.discover({
+      asset: 'BTC',
+      side: 'SELL',
+      limit: 20,
+    });
+    console.log(`Found ${total} offers from sources: ${sources.join(', ')}`, offers);
+  };
+
+  return <button onClick={handleSearch}>Discover Offers</button>;
+}
+```
+
+`useSailsClient()` returns the same `SailsClient` instance you passed to `<SailsProvider>` — it is not a new client, and it shares the same session token and transport layer as all hooks in the tree. Both `useSailsClient()` and `useSailsContext()` throw if called outside a `<SailsProvider>`.
+
+<Warning>
+  Mutations you perform through the raw client (via `useSailsClient()`) do not automatically invalidate TanStack Query caches. If you mutate state this way, call `queryClient.invalidateQueries()` manually, or prefer the built-in mutation hooks like those in `useSailsEscrow` which handle this for you.
+</Warning>

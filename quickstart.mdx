@@ -1,0 +1,146 @@
+---
+title: "Sails Protocol Quickstart: P2P Trade in 15 Minutes"
+sidebarTitle: "Quickstart"
+description: "Install the Sails P2P Trading SDK, register a cryptographic identity, and complete a full non-custodial P2P trade in under 15 minutes."
+---
+
+This guide walks you through your first end-to-end P2P trade using the Sails P2P Trading SDK. By the end, you will have registered a cryptographic identity, published a sell offer on the P2P network, discovered it as a buyer, opened a trade, and released funds through a non-custodial escrow — using only the SDK's public API.
+
+<Note>
+  These steps require a running Sails node at `http://localhost:3000`. See the [Architecture page](/architecture) for an explanation of the full stack, or start a local node in one command:
+
+  ```bash
+  docker compose up -d --build
+  ```
+
+  Confirm it is up with `curl http://localhost:3000/health`.
+</Note>
+
+<Steps>
+  <Step title="Install the SDK">
+    Add the Sails P2P Trading SDK to your project using your preferred package manager.
+
+    <CodeGroup>
+      ```bash npm
+      npm install @satsails/p2p-trading-sdk
+      ```
+
+      ```bash yarn
+      yarn add @satsails/p2p-trading-sdk
+      ```
+
+      ```bash pnpm
+      pnpm add @satsails/p2p-trading-sdk
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Initialize the client">
+    Import `SailsClient` and point it at your running node. Every protocol module — identity, liquidity, trading, settlement, reputation — is accessible from this single client instance.
+
+    ```typescript
+    import { SailsClient } from '@satsails/p2p-trading-sdk';
+
+    const client = new SailsClient({
+      baseUrl: 'http://localhost:3000',
+    });
+    ```
+
+    <Tip>
+      In production, replace `http://localhost:3000` with the URL of your deployed Sails node. The `baseUrl` is the only required option — point it at any accessible Sails node.
+    </Tip>
+  </Step>
+
+  <Step title="Register your identity">
+    Create a new participant identity and authenticate to receive a session token. Each identity is an Ed25519 keypair — portable across the entire Sails network and used to build reputation over time.
+
+    ```typescript
+    const { participant, keypair } = await client.identity.create(undefined, 'My App');
+    console.log('Participant ID:', participant.id);
+
+    // Authenticate to get a session token
+    await client.identity.authenticate(keypair);
+    console.log('Authenticated!');
+    ```
+
+    <Note>
+      Store the `keypair` securely — it is the only credential your participant identity has. There is no password-reset flow; identity is cryptographic.
+    </Note>
+  </Step>
+
+  <Step title="Publish a sell offer">
+    As the seller, publish an offer specifying the asset, price, amount range, and payment method. The offer is broadcast to the P2P network and becomes discoverable to buyers immediately.
+
+    ```typescript
+    const offer = await client.liquidity.publish({
+      asset: 'BTC',
+      side: 'SELL',
+      priceUsd: '45000',
+      minAmount: '0.001',
+      maxAmount: '1.0',
+      paymentMethod: 'BANK_TRANSFER',
+      paymentDetails: 'Account: 12345678',
+    });
+    console.log('Offer ID:', offer.id);
+    ```
+
+    Supported assets include `BTC`, `USDT_ERC20`, `USDT_TRC20`, `USDT_LIQUID`, `USDT_LIGHTNING`, `LN_BTC`, `LIQUID_BTC`, `SPARK`, `STACKS`, and `RSK_BTC`. See the [API Reference](/api/overview) for the full list of payment methods.
+  </Step>
+
+  <Step title="Discover offers and start a trade">
+    From a separate buyer client, query the order book to discover available offers, then open a trade against the one you want. The `trade()` call creates the trade and initiates the P2P connection between buyer and seller.
+
+    ```typescript
+    // As the buyer — use a separate SailsClient instance
+    const buyerClient = new SailsClient({ baseUrl: 'http://localhost:3000' });
+    const { keypair: buyerKeypair } = await buyerClient.identity.create(undefined, 'My App — Buyer');
+    await buyerClient.identity.authenticate(buyerKeypair);
+
+    const { offers } = await buyerClient.liquidity.discover({
+      asset: 'BTC',
+      side: 'SELL',
+      limit: 10,
+    });
+
+    const trade = await buyerClient.openp2p.trade(offers[0].id, '0.01');
+    console.log('Trade ID:', trade.id);
+    ```
+
+    <Tip>
+      In a real integration, the seller and buyer are different users running separate client instances — each with their own identity and session. The example above creates both on the same machine for simplicity.
+    </Tip>
+  </Step>
+
+  <Step title="Open the negotiation channel">
+    Both parties connect to the trade's real-time chat channel to confirm payment details before escrow is locked. Messages are delivered over an end-to-end encrypted Secretstream channel via Pears (Holepunch) — no central server relays them.
+
+    ```typescript
+    const channel = client.openp2p.chat(trade.id);
+    channel.onMessage((msg) => console.log('Message:', msg.content));
+    await channel.send({ content: 'Ready to proceed!' });
+    ```
+
+    Once both parties have agreed on terms, proceed to lock funds in escrow, mark the fiat payment as sent, and release the escrow when payment is confirmed. See the [Escrow Lifecycle guide](/guides/escrow-lifecycle) for the full settlement flow.
+
+    <Warning>
+      Always call `channel.close()` when you are done with a chat session to release the underlying Pears connection. Leaving channels open will exhaust peer connection limits over time.
+    </Warning>
+  </Step>
+</Steps>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Escrow Lifecycle" icon="lock" href="/guides/escrow-lifecycle">
+    Walk through the complete escrow flow: create, lock, mark payment sent, submit proof, and release — including dispute escalation.
+  </Card>
+  <Card title="Core Concepts" icon="book-open" href="/concepts/protocol-primitives">
+    Deep-dive into the nine protocol primitives — Intent, Identity, Discovery, Negotiation, Settlement, Reputation, Agent, Proof, and Dispute.
+  </Card>
+  <Card title="SDK Reference" icon="brackets-curly" href="/sdk/client">
+    Full method reference for `SailsClient` — every module, every parameter, every return type.
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Raw HTTP endpoint reference for all Sails Protocol routes, with request/response schemas and authentication details.
+  </Card>
+</CardGroup>

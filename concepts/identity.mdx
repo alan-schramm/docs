@@ -1,0 +1,96 @@
+---
+title: "Cryptographic Identity in Sails Protocol Explained"
+sidebarTitle: "Identity"
+description: "Every Sails participant is a self-sovereign Ed25519 keypair — no username, no email, no platform lock-in. Learn how identity and authentication work."
+---
+
+Identity in Sails Protocol is built on Ed25519 public-key cryptography. Your identity is your keypair — portable, self-sovereign, and not tied to any centralized service. There is no username, no email address, and no registration form. If you can prove control of a keypair, you are a participant — on any Sails-compatible platform, with no re-registration required.
+
+## Creating an Identity
+
+Use the `identity.create()` method to register a new participant. The SDK generates a fresh Ed25519 keypair automatically if you don't supply one.
+
+```typescript
+import { SailsClient } from '@satsails/p2p-trading-sdk';
+
+const client = new SailsClient({ baseUrl: 'https://your-sails-node.example' });
+
+// Create a new participant — keypair is generated automatically
+const { participant, keypair } = await client.identity.create(undefined, 'My Wallet');
+console.log('Public Key:', keypair.publicKey);
+console.log('Participant ID:', participant.id);
+```
+
+<Warning>
+  Store your private key securely. Sails does not store your private key anywhere on its servers — if you lose it, you lose access to your identity and your accumulated reputation. Back it up in encrypted storage before doing anything else.
+</Warning>
+
+## Authentication
+
+Sails uses a cryptographic challenge-response flow to authenticate you. No password is ever sent over the wire.
+
+<Steps>
+  <Step title="Request a challenge">
+    The client requests a one-time challenge string tied to your public key.
+  </Step>
+  <Step title="Sign the challenge">
+    Your client signs the challenge bytes with your Ed25519 private key.
+  </Step>
+  <Step title="Server verifies and returns a session token">
+    The server verifies your signature and returns a session token, which the SDK stores automatically for subsequent requests.
+  </Step>
+</Steps>
+
+```typescript
+// Authenticate with your keypair — challenge-response is handled automatically
+await client.identity.authenticate(keypair);
+// Session token is stored automatically in the client
+
+// Verify authentication succeeded
+const me = await client.identity.me();
+console.log('Logged in as:', me.displayName);
+```
+
+You can also call `identity.challenge()` directly if you need the raw challenge string for your own signing flow:
+
+```typescript
+// Request a raw challenge — useful for custom signing integrations
+const { challenge, expiresIn } = await client.identity.challenge(publicKeyHex);
+console.log('Challenge expires in:', expiresIn, 'seconds');
+```
+
+## Wallet-Backed Authentication
+
+If your application stores the private key in a hardware wallet or an external signing device, you can register and authenticate without the raw secret key ever touching the SDK. The private key stays inside your wallet at all times.
+
+```typescript
+// Register with just a public key — private key stays in your wallet
+const participant = await client.identity.createWithPublicKey(
+  walletPublicKeyHex,
+  'My Hardware Wallet'
+);
+
+// Authenticate by signing with the wallet
+await client.identity.authenticateWithWallet(walletPublicKeyHex, walletAdapter);
+// walletAdapter must implement signMessage(message: Uint8Array): Promise<Uint8Array>
+```
+
+The `walletAdapter` you pass must implement the `WalletAdapter` interface, specifically its `signMessage` method. This works for Ed25519 identity keys, secp256k1 keys, and hardware-backed signers — the interface does not care which.
+
+## Fetching Participant Profiles
+
+You can look up any participant's public profile by their ID, or fetch your own authenticated profile.
+
+```typescript
+// Fetch any participant's public profile
+const seller = await client.identity.get('participant-id-here');
+console.log('Display Name:', seller.displayName);
+console.log('Verification Level:', seller.verificationLevel); // 0, 1, or 2
+
+// Fetch your own profile (requires an active session)
+const me = await client.identity.me();
+```
+
+<Tip>
+  Your participant ID and public key are public information — share them freely with counterparties. Only your private key must be kept secret. Your public key is how others verify your signatures and look up your reputation score.
+</Tip>

@@ -1,0 +1,486 @@
+---
+title: "OpenLiquidity API: Offers, Order Book, and Matching"
+sidebarTitle: "Liquidity"
+description: "REST endpoints for publishing sell/buy offers, discovering available offers, querying the order book, and matching offers to trade intents."
+---
+
+The OpenLiquidity API is Sails Protocol's discovery layer. It lets you publish offers to the network, browse what other participants are willing to trade, inspect the order book for a specific asset, and find the best counterparty match for a given trade intent. Sails discovery is non-custodial and decentralized — no central order-book authority controls what gets listed or matched. All monetary values (prices, amounts) are submitted and returned as **decimal strings** to preserve precision across all languages and runtimes (RFC-009).
+
+<Note>
+  Authenticated endpoints require a `Bearer` session token in the `Authorization` header. Obtain one via `POST /v1/identity/authenticate` (see [Identity](/api/identity)).
+</Note>
+
+---
+
+## List and Filter Offers
+
+<br />
+
+**`GET /v1/liquidity/offers`**
+
+Retrieve a paginated list of active offers filtered by asset and side, with optional further filtering by payment method or price range. This endpoint is public and requires no authentication.
+
+### Query Parameters
+
+<ParamField query="asset" type="string" required>
+  Asset symbol to filter by, e.g. `BTC`, `USDT`.
+</ParamField>
+
+<ParamField query="side" type="string" required>
+  Offer side to filter by: `BUY` or `SELL`.
+</ParamField>
+
+<ParamField query="paymentMethod" type="string">
+  Filter by fiat payment method, e.g. `PIX`, `SEPA`, `ACH`, `WIRE`.
+</ParamField>
+
+<ParamField query="priceMin" type="string">
+  Minimum USD price (decimal string). Only offers with `priceUsd >= priceMin` are returned.
+</ParamField>
+
+<ParamField query="priceMax" type="string">
+  Maximum USD price (decimal string). Only offers with `priceUsd <= priceMax` are returned.
+</ParamField>
+
+<ParamField query="limit" type="integer">
+  Number of offers to return. Min `1`, max `50`, default `10`.
+</ParamField>
+
+<ParamField query="offset" type="integer">
+  Pagination offset. Default `0`.
+</ParamField>
+
+### Response
+
+<ResponseField name="offers" type="array">
+  Array of offer summary objects. See the full offer shape below.
+</ResponseField>
+
+<ResponseField name="sources" type="array">
+  Names of the liquidity providers that contributed to this result set.
+</ResponseField>
+
+<ResponseField name="total" type="integer">
+  Total number of matching offers (for pagination).
+</ResponseField>
+
+<ResponseField name="hasMore" type="boolean">
+  `true` if there are additional pages beyond the current `offset + limit`.
+</ResponseField>
+
+<CodeGroup>
+```bash Request
+curl "https://your-node.example.com/v1/liquidity/offers?asset=BTC&side=SELL&paymentMethod=PIX&limit=5"
+```
+
+```json Response
+{
+  "success": true,
+  "data": {
+    "offers": [
+      {
+        "id": "offer_abc123",
+        "source": "internal",
+        "asset": "BTC",
+        "side": "SELL",
+        "priceUsd": "45000",
+        "minAmount": "0.001",
+        "maxAmount": "1.0",
+        "paymentMethods": ["PIX"],
+        "traderReputation": 4.8
+      }
+    ],
+    "sources": ["internal"],
+    "total": 42,
+    "hasMore": true
+  }
+}
+```
+</CodeGroup>
+
+<Expandable title="Offer summary object fields">
+  | Field | Type | Description |
+  |---|---|---|
+  | `id` | string | Unique offer identifier |
+  | `source` | string | Liquidity provider that published this offer (e.g. `"internal"`) |
+  | `asset` | string | Asset being traded (e.g. `BTC`, `USDT`) |
+  | `side` | string | `BUY` or `SELL` — the offer creator's side |
+  | `priceUsd` | string | Price per unit in USD, as a decimal string |
+  | `minAmount` | string | Minimum trade amount (decimal string) |
+  | `maxAmount` | string | Maximum trade amount (decimal string) |
+  | `paymentMethods` | string[] | Accepted fiat payment methods |
+  | `traderReputation` | number | Offer creator's reputation score (optional) |
+</Expandable>
+
+---
+
+## Publish a New Offer
+
+<br />
+
+**`POST /v1/liquidity/offers`** *(authentication required)*
+
+Create and publish a new offer to the Sails liquidity network. Your `participantId` is derived from your session — never pass it in the request body.
+
+### Request Body
+
+<ParamField body="asset" type="string" required>
+  The asset you want to trade, e.g. `BTC` or `USDT`.
+</ParamField>
+
+<ParamField body="side" type="string" required>
+  Your side of the trade: `BUY` (you want to acquire the asset) or `SELL` (you want to sell it).
+</ParamField>
+
+<ParamField body="priceUsd" type="string" required>
+  Your price per unit in USD, as a decimal string (e.g. `"45000"`).
+</ParamField>
+
+<ParamField body="minAmount" type="string" required>
+  Minimum trade size you will accept, as a decimal string (e.g. `"0.001"`).
+</ParamField>
+
+<ParamField body="maxAmount" type="string" required>
+  Maximum trade size you will accept, as a decimal string (e.g. `"1.0"`).
+</ParamField>
+
+<ParamField body="paymentMethod" type="string" required>
+  The fiat payment method you accept, e.g. `PIX`, `SEPA`, `ACH`, `WIRE`, `UPI`.
+</ParamField>
+
+<ParamField body="paymentDetails" type="string">
+  Payment routing details for your chosen method (e.g. your PIX key, IBAN, or bank account number). Shared with your counterparty during negotiation — never broadcast publicly.
+</ParamField>
+
+<CodeGroup>
+```bash Request
+curl -X POST https://your-node.example.com/v1/liquidity/offers \
+  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asset": "BTC",
+    "side": "SELL",
+    "priceUsd": "45000",
+    "minAmount": "0.001",
+    "maxAmount": "1.0",
+    "paymentMethod": "PIX",
+    "paymentDetails": "alice@example.com"
+  }'
+```
+
+```json Response
+{
+  "success": true,
+  "data": {
+    "id": "offer_abc123",
+    "asset": "BTC",
+    "side": "SELL",
+    "priceUsd": "45000",
+    "minAmount": "0.001",
+    "maxAmount": "1.0",
+    "paymentMethod": "PIX",
+    "status": "ACTIVE",
+    "userId": "part_abc123",
+    "createdAt": "2025-01-15T10:00:00Z"
+  }
+}
+```
+</CodeGroup>
+
+---
+
+## Get a Single Offer
+
+<br />
+
+**`GET /v1/liquidity/offers/:id`**
+
+Retrieve a single offer by its ID, including the seller's public reputation profile. Use this before opening a trade to review your counterparty's history.
+
+### Path Parameters
+
+<ParamField path="id" type="string" required>
+  The offer ID (e.g. `offer_abc123`).
+</ParamField>
+
+<CodeGroup>
+```bash Request
+curl https://your-node.example.com/v1/liquidity/offers/offer_abc123
+```
+
+```json Response
+{
+  "success": true,
+  "data": {
+    "id": "offer_abc123",
+    "asset": "BTC",
+    "side": "SELL",
+    "priceUsd": "45000",
+    "minAmount": "0.001",
+    "maxAmount": "1.0",
+    "paymentMethod": "PIX",
+    "status": "ACTIVE",
+    "userId": "part_xyz",
+    "createdAt": "2025-01-15T10:00:00Z",
+    "user": {
+      "id": "part_xyz",
+      "displayName": "bob_liquidity",
+      "reputationScore": 4.8,
+      "totalTrades": 134,
+      "verified": true
+    }
+  }
+}
+```
+</CodeGroup>
+
+---
+
+## Get the Order Book
+
+<br />
+
+**`GET /v1/liquidity/offers/:asset/book`**
+
+Retrieve the current order book for a specific asset — all active bids (BUY offers) and asks (SELL offers), plus the current spread.
+
+### Path Parameters
+
+<ParamField path="asset" type="string" required>
+  The asset symbol to query, e.g. `BTC` or `USDT`.
+</ParamField>
+
+### Response
+
+<ResponseField name="asset" type="string">
+  The asset symbol this order book is for.
+</ResponseField>
+
+<ResponseField name="bids" type="array">
+  Active BUY offers, ordered by price descending (highest bid first). Each entry is an offer summary object.
+</ResponseField>
+
+<ResponseField name="asks" type="array">
+  Active SELL offers, ordered by price ascending (lowest ask first). Each entry is an offer summary object.
+</ResponseField>
+
+<ResponseField name="spread" type="string">
+  The difference between the best ask and best bid, as a decimal string in USD. `null` if either side has no active offers.
+</ResponseField>
+
+<CodeGroup>
+```bash Request
+curl https://your-node.example.com/v1/liquidity/offers/BTC/book
+```
+
+```json Response
+{
+  "success": true,
+  "data": {
+    "asset": "BTC",
+    "bids": [
+      {
+        "id": "offer_bid1",
+        "source": "internal",
+        "asset": "BTC",
+        "side": "BUY",
+        "priceUsd": "44500",
+        "minAmount": "0.001",
+        "maxAmount": "0.5",
+        "paymentMethods": ["PIX"],
+        "traderReputation": 4.2
+      }
+    ],
+    "asks": [
+      {
+        "id": "offer_abc123",
+        "source": "internal",
+        "asset": "BTC",
+        "side": "SELL",
+        "priceUsd": "45000",
+        "minAmount": "0.001",
+        "maxAmount": "1.0",
+        "paymentMethods": ["PIX"],
+        "traderReputation": 4.8
+      }
+    ],
+    "spread": "500.00000000"
+  }
+}
+```
+</CodeGroup>
+
+---
+
+## Get Your Own Offers
+
+<br />
+
+**`GET /v1/liquidity/offers/mine`** *(authentication required)*
+
+Retrieve all offers belonging to the authenticated participant, including non-ACTIVE ones (paused, completed, cancelled). Your identity is always derived from the session — there is no `participantId` query parameter.
+
+### Request Headers
+
+<ParamField header="Authorization" type="string" required>
+  `Bearer <sessionToken>`
+</ParamField>
+
+<CodeGroup>
+```bash Request
+curl https://your-node.example.com/v1/liquidity/offers/mine \
+  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..."
+```
+
+```json Response
+{
+  "success": true,
+  "data": [
+    {
+      "id": "offer_abc123",
+      "asset": "BTC",
+      "side": "SELL",
+      "priceUsd": "45000",
+      "minAmount": "0.001",
+      "maxAmount": "1.0",
+      "paymentMethod": "PIX",
+      "status": "ACTIVE",
+      "userId": "part_abc123",
+      "createdAt": "2025-01-15T10:00:00Z"
+    },
+    {
+      "id": "offer_def456",
+      "asset": "BTC",
+      "side": "SELL",
+      "priceUsd": "43000",
+      "minAmount": "0.01",
+      "maxAmount": "0.5",
+      "paymentMethod": "SEPA",
+      "status": "PAUSED",
+      "userId": "part_abc123",
+      "createdAt": "2025-01-10T08:00:00Z"
+    }
+  ]
+}
+```
+</CodeGroup>
+
+---
+
+## Update Offer Status
+
+<br />
+
+**`PATCH /v1/liquidity/offers/:id/status`** *(authentication required)*
+
+Change the status of one of your offers. You can pause an offer to temporarily hide it from discovery, re-activate it, or cancel it entirely.
+
+### Path Parameters
+
+<ParamField path="id" type="string" required>
+  The offer ID to update.
+</ParamField>
+
+### Request Body
+
+<ParamField body="status" type="string" required>
+  The target status. Must be one of: `ACTIVE`, `PAUSED`, `COMPLETED`, `CANCELLED`.
+</ParamField>
+
+<CodeGroup>
+```bash Request
+curl -X PATCH https://your-node.example.com/v1/liquidity/offers/offer_abc123/status \
+  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..." \
+  -H "Content-Type: application/json" \
+  -d '{ "status": "PAUSED" }'
+```
+
+```json Response
+{
+  "success": true,
+  "data": {
+    "id": "offer_abc123",
+    "status": "PAUSED",
+    "updatedAt": "2025-01-15T11:30:00Z"
+  }
+}
+```
+</CodeGroup>
+
+<Warning>
+  You can only update offers that belong to your authenticated session. Attempting to modify another participant's offer returns `403 FORBIDDEN`.
+</Warning>
+
+---
+
+## Match an Offer to a Trade Intent
+
+<br />
+
+**`POST /v1/liquidity/match`**
+
+Given a trade intent, find the best available offer that satisfies it. The match engine ranks candidates by price. Use this before calling `POST /v1/openp2p/trades` to identify the optimal counterparty.
+
+### Request Body
+
+<ParamField body="asset" type="string" required>
+  The asset you want to trade, e.g. `BTC`.
+</ParamField>
+
+<ParamField body="side" type="string" required>
+  Your side: `BUY` or `SELL`.
+</ParamField>
+
+<ParamField body="amount" type="string" required>
+  The amount you want to trade, as a decimal string (e.g. `"0.01"`).
+</ParamField>
+
+<CodeGroup>
+```bash Request
+curl -X POST https://your-node.example.com/v1/liquidity/match \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asset": "BTC",
+    "side": "BUY",
+    "amount": "0.01"
+  }'
+```
+
+```json Response
+{
+  "success": true,
+  "data": {
+    "id": "offer_abc123",
+    "source": "internal",
+    "asset": "BTC",
+    "side": "SELL",
+    "priceUsd": "45000",
+    "minAmount": "0.001",
+    "maxAmount": "1.0",
+    "paymentMethods": ["PIX"],
+    "traderReputation": 4.8
+  }
+}
+```
+</CodeGroup>
+
+The response is the best matching offer summary, or `null` if no offer satisfies the given asset, side, and amount.
+
+<Tip>
+  Pass the matched offer's `id` as `offerId` when calling `POST /v1/openp2p/trades` to open a trade directly against this counterparty. See [Trades](/api/trades) for the next step.
+</Tip>
+
+---
+
+## Error Reference
+
+<Expandable title="Liquidity error codes">
+  | `error` | HTTP | When it occurs |
+  |---|---|---|
+  | `VALIDATION_ERROR` | 400 | A required field is missing, an amount is not a valid decimal string, or `side` is not `BUY`/`SELL` |
+  | `AUTH_ERROR` | 401 | Missing or expired session token on a protected endpoint |
+  | `FORBIDDEN` | 403 | Attempting to modify an offer that belongs to another participant |
+  | `NOT_FOUND` | 404 | The requested offer ID does not exist |
+  | `RATE_LIMIT_EXCEEDED` | 429 | Too many requests — check the `Retry-After` header |
+  | `INTERNAL_ERROR` | 500 | Unexpected server error |
+</Expandable>

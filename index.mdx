@@ -1,0 +1,55 @@
+---
+title: "Sails Protocol: Open P2P Financial Marketplace SDK"
+sidebarTitle: "Home"
+description: "Sails Protocol lets wallets, fintechs, OTCs, and AI agents execute non-custodial P2P financial transactions without centralized custody."
+---
+
+Sails Protocol is open infrastructure for building interoperable P2P Financial Marketplaces. It standardizes the identity, reputation, escrow, settlement, and discovery infrastructure that every wallet used to rebuild from scratch — so you can integrate a fully non-custodial P2P marketplace in a single SDK call. Whether you're a Bitcoin wallet, a multi-chain fintech, an OTC desk, or an AI trading agent, Sails gives you the coordination layer without ever touching your users' funds.
+
+<CardGroup cols={2}>
+  <Card title="Introduction" icon="book" href="/introduction">
+    Understand what Sails Protocol is, who builds on it, and the eight protocol modules that power it.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install the SDK, register an identity, publish an offer, and execute your first P2P trade in 15 minutes.
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Full endpoint reference for every Sails Protocol route — identity, liquidity, trades, escrow, proofs, and more.
+  </Card>
+  <Card title="SDK Guide" icon="brackets-curly" href="/sdk/installation">
+    Everything you need to install, configure, and use the Sails P2P Trading SDK in your application.
+  </Card>
+</CardGroup>
+
+## How to integrate Sails Protocol
+
+These four steps take you from zero to a working P2P trade. Each step links to a dedicated guide with full details.
+
+<Steps>
+  <Step title="Install the SDK">
+    Add `@satsails/p2p-trading-sdk` to your project with npm, yarn, or pnpm. The SDK wraps every protocol module — identity, liquidity, trading, settlement, and reputation — behind a single `SailsClient` interface.
+  </Step>
+  <Step title="Register your identity">
+    Create a cryptographic Ed25519 identity for your application or your user. This identity is portable across the entire Sails network and accumulates reputation over time — no email, no password, no centralized account required.
+  </Step>
+  <Step title="Publish or discover offers">
+    Publish a liquidity offer (asset, price, payment method) to the P2P network, or query the order book to discover existing offers from other participants. Discovery runs over HyperDHT — no central server to query.
+  </Step>
+  <Step title="Execute a trade">
+    Open a trade against an offer, negotiate terms over an end-to-end encrypted chat channel, lock funds in a non-custodial escrow, and release them once the off-chain payment is confirmed. Sails coordinates every step — your keys never leave your wallet.
+  </Step>
+</Steps>
+
+## What makes Sails different
+
+<CardGroup cols={3}>
+  <Card title="Non-custodial" icon="shield" href="/introduction">
+    Sails Protocol never holds your funds. Every escrow uses pluggable providers — multisig, Lightning HODL, WDK — where keys stay with participants, not the protocol.
+  </Card>
+  <Card title="Multi-chain" icon="link" href="/architecture">
+    Trade BTC, USDT (ERC-20, TRC-20, Liquid, Lightning), Liquid BTC, Spark, Stacks, RSK, and more — all through one SDK with a unified settlement interface.
+  </Card>
+  <Card title="AI-assisted" icon="robot" href="/architecture">
+    Powered by QVAC, Tether's on-device LLM. Trade intent generation, offer matching, and risk assessment run locally — no cloud API, no data leaving the device.
+  </Card>
+</CardGroup>

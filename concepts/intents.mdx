@@ -1,0 +1,88 @@
+---
+title: "Intents in Sails Protocol: Express Your Trading Goal"
+sidebarTitle: "Intents"
+description: "Intents are machine-readable declarations of desired outcomes in Sails Protocol. Learn how TradeIntent works and how the Intent Engine routes them."
+---
+
+An Intent is a machine-readable declaration of what you want to achieve — buy BTC, sell USDT, exchange at a specific price. Rather than issuing imperative commands, you express a goal and the Sails Protocol Intent Engine handles the coordination: routing your Intent to the right module, discovering counterparties, and tracking the outcome through fulfillment. Every interaction in Sails Protocol begins with an Intent.
+
+## Intent Types
+
+Sails Protocol defines six Intent types. `TradeIntent` is fully implemented today. The remaining types are on the roadmap and will be introduced as new protocol modules ship.
+
+| Intent Type | Status | Purpose |
+|---|---|---|
+| `TradeIntent` | ✅ Available | Buy or sell a crypto asset for fiat or another asset |
+| `PaymentIntent` | 📋 Planned | Send a payment to another participant |
+| `SwapIntent` | 📋 Planned | Swap one asset for another |
+| `LoanIntent` | 📋 Planned | Borrow or lend assets |
+| `EarnIntent` | 📋 Planned | Earn yield on assets |
+| `AgentIntent` | 📋 Planned | Instruct an AI agent to trade on your behalf with a budget and approval threshold |
+
+## Creating a TradeIntent
+
+Call `createIntent()` with the Intent type and a `TradeIntentPayload`. The SDK requires you to authenticate first — the Intent is attributed to your session's participant identity automatically.
+
+```typescript
+const intent = await client.createIntent('TradeIntent', {
+  side: 'BUY',
+  asset: 'BTC',
+  currency: 'USD',
+  maxValue: '46000',
+  fiatMethod: 'PIX',
+});
+console.log('Intent ID:', intent.id);
+console.log('Status:', intent.status); // 'CREATED'
+```
+
+All monetary values — `maxValue`, `minValue` — must be decimal strings (e.g. `'46000'`), never JavaScript `number` values. This is required: JavaScript's `number` type is IEEE 754 floating-point, which cannot represent exact decimal values for financial fields.
+
+Once created, the Intent Engine moves your Intent through its lifecycle automatically:
+
+`CREATED` → `VALIDATED` → `COORDINATED` → `DISCOVERING` → `MATCHED` → `NEGOTIATING` → `COMMITTED` → `SETTLING` → `FULFILLED`
+
+<Note>
+  The SDK will throw a validation error if you pass a number for `maxValue` or `minValue`. Always use strings for financial fields — this is intentional and enforced at runtime to prevent silent precision loss.
+</Note>
+
+## Using Intent Builders
+
+The integration starter ships typed builder helpers that apply runtime validation before sending your payload to the server. These are the recommended way to construct Intent payloads.
+
+```typescript
+import { buildBuyIntent, buildSellIntent } from './sails-integration/intent-builder';
+
+// Typed helper with runtime validation — ensures decimal strings are used
+const buyPayload = buildBuyIntent('BTC', {
+  currency: 'USD',
+  maxValue: '46000',   // Must be a decimal string, not a JS number
+  fiatMethod: 'PIX',
+});
+
+const intent = await client.createIntent('TradeIntent', buyPayload);
+```
+
+```typescript
+// Building a sell-side Intent
+const sellPayload = buildSellIntent('BTC', {
+  currency: 'USD',
+  minValue: '44000',
+  fiatMethod: 'SEPA',
+});
+
+const intent = await client.createIntent('TradeIntent', sellPayload);
+```
+
+## Cancelling an Intent
+
+You can cancel an active Intent at any time before it reaches the `COMMITTED` state. Once an escrow is locked, use the dispute flow instead.
+
+```typescript
+await client.cancelIntent(intent.id);
+```
+
+Cancelling by mutual agreement always produces a `NEUTRAL` reputation outcome for both parties — a cancellation can never automatically generate a negative reputation impact on your counterparty.
+
+<Tip>
+  Use `agents.generateTradeIntent()` to let the QVAC on-device AI model generate an Intent payload from a natural-language goal — for example, "buy some BTC for around $500." The agent constructs a well-formed `TradeIntentPayload` on your behalf, within any spending limits you have configured. See the AI Agents guide for details.
+</Tip>

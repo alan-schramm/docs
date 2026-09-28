@@ -1,0 +1,119 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Sails Protocol",
+  "projectDescription": "Sails Protocol is an open coordination layer that lets wallets, fintechs, OTCs, and AI agents execute non-custodial P2P financial transactions — powered by WDK, Pears, and QVAC.",
+  "theme": "luma",
+  "primaryColor": "#fc4d06",
+  "lightColor": "#fca47c",
+  "darkColor": "#f4efe7",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/protocol-primitives",
+              "concepts/identity",
+              "concepts/intents",
+              "concepts/settlement",
+              "concepts/reputation"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/p2p-trade",
+              "guides/escrow-lifecycle",
+              "guides/disputes",
+              "guides/ai-agents",
+              "guides/wallet-adapter"
+            ]
+          },
+          {
+            "group": "SDK",
+            "pages": [
+              "sdk/installation",
+              "sdk/client",
+              "sdk/react-hooks"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api/overview",
+              "api/authentication"
+            ]
+          },
+          {
+            "group": "Endpoints",
+            "pages": [
+              "api/identity",
+              "api/liquidity",
+              "api/trades",
+              "api/settlement",
+              "api/reputation",
+              "api/agents",
+              "api/proof",
+              "api/capabilities",
+              "api/peers"
+            ]
+          },
+          {
+            "group": "Real-Time",
+            "pages": [
+              "api/websocket"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Non-custodial P2P trading — Sails never holds funds; escrow is cryptographically enforced between parties",
+    "Multi-chain settlement — Bitcoin multisig, Lightning HODL invoices, Liquid Covenant, WDK USDT/EVM, and SAFE_GUARD_EVM",
+    "Portable cryptographic reputation — Ed25519-tied identity with outcome-based scoring, not platform-locked",
+    "AI-assisted negotiation via QVAC — on-device LLM for trade intent generation, risk assessment, and fraud detection",
+    "E2E encrypted P2P chat — Secretstream/Pears channels with no server in the message path",
+    "Formal dispute resolution — escalation from Policy Engine through arbiters to settlement",
+    "Pluggable WalletAdapter interface — connect any wallet by implementing 7 methods",
+    "React SDK with TanStack Query hooks and ready-made UI components",
+    "Open specification — any wallet, fintech, OTC, or AI agent can implement the protocol"
+  ],
+  "publicApiSurface": [
+    "SailsClient({ baseUrl, wallet? }) — main SDK entry point",
+    "identity.create() / identity.authenticate() / identity.me()",
+    "liquidity.publish() / liquidity.discover() / liquidity.book() / liquidity.match()",
+    "openp2p.trade() / openp2p.getTrade() / openp2p.chat() → WebSocketChannel",
+    "settlement.create() / settlement.lock() / settlement.markPaymentSent() / settlement.release() / settlement.dispute()",
+    "settlement.resolveDispute() / settlement.appealDispute()",
+    "reputation.get() / reputation.leaderboard() / reputation.vouchFor()",
+    "peers.start() / peers.joinTopic() / peers.joinTrade() / peers.broadcastOffer()",
+    "capabilities.register() / capabilities.list() / capabilities.revoke()",
+    "proof.assertClaim() / proof.submitProof() / proof.verifyProof() / proof.getEvidenceBundle()",
+    "agents.generateTradeIntent() / agents.assessIntentRisk()",
+    "createIntent() / cancelIntent() / dispute()",
+    "WalletAdapter interface — getPeerId / getAddress / getBalance / signTransaction / broadcastTransaction / signMessage / getCapabilities",
+    "@satsails/sdk-react — SailsProvider, useSailsTrade, useSailsTrades, useSailsEscrow",
+    "React UI components — TradeCard, TradeStatusBadge, EscrowStatusBadge, ReputationBadge",
+    "Intent builders — buildTradeIntentPayload(), buildBuyIntent(), buildSellIntent()",
+    "TradeEventHandler — typed WebSocketChannel wrapper with event dispatch and message history",
+    "generateEscrowKeypair() / signEscrowPsbt() / signEscrowArkTx() / signEscrowSafeUserOp()",
+    "POST /v1/intents, GET /v1/liquidity/offers, POST /v1/openp2p/trades, POST /v1/settlement/escrow",
+    "WS /v1/openp2p/chat — JOIN_TRADE / SEND_MESSAGE / LEAVE_TRADE events"
+  ]
+}

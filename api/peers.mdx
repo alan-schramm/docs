@@ -1,0 +1,171 @@
+---
+title: "Sails Peers: Start HyperDHT Nodes and Discover Peers"
+sidebarTitle: "Peers"
+description: "REST endpoints for starting and stopping your HyperDHT node, joining asset topics, and broadcasting offers to connected peers without a central server."
+---
+
+The Peers API manages your node's HyperDHT presence — the P2P transport layer that lets you discover counterparties and exchange messages without any central relay server. Built on Holepunch's Pears stack, HyperDHT enables direct peer-to-peer connectivity with NAT traversal, ensuring that participants behind firewalls or dynamic IPs can still connect reliably. Each user's node is managed independently via a server-side registry, so multiple participants can coexist in the same server process.
+
+<Note>
+  The Peers API is optional. You can use Sails Protocol's HTTP-based offer discovery without starting a HyperDHT node. The P2P transport layer provides additional privacy and decentralization — particularly useful for private per-trade channels and real-time offer broadcasting to connected peers.
+</Note>
+
+---
+
+## POST /v1/peers/start
+
+Start a HyperDHT node for your session. The server generates an ephemeral Ed25519 identity for your node — you do not supply a key. Once started, your node can join asset topics and participate in direct peer-to-peer discovery.
+
+### Request Body
+
+This endpoint accepts no request body. The server generates your node's session identity automatically.
+
+### Example Response
+
+```json
+{
+  "peerId": "a1b2c3d4e5f6...",
+  "status": "ONLINE"
+}
+```
+
+<Expandable title="Response fields">
+  <ResponseField name="peerId" type="string">
+    Your HyperDHT node's public key — a portable Pears Ed25519 identity. Share this with counterparties who want to address you directly on the DHT.
+  </ResponseField>
+  <ResponseField name="status" type="string">
+    `"ONLINE"` once your node is connected to the DHT.
+  </ResponseField>
+</Expandable>
+
+---
+
+## POST /v1/peers/stop
+
+Gracefully shut down your HyperDHT node. This disconnects you from all joined topics and peer channels. In-flight trades are not affected — they continue through the HTTP layer.
+
+### Example Response
+
+```json
+{
+  "status": "OFFLINE"
+}
+```
+
+---
+
+## GET /v1/peers/status
+
+Check your node's current connection status, active peer count, and the asset topics you are currently announcing on.
+
+### Example Response
+
+```json
+{
+  "status": "ONLINE",
+  "peerCount": 12,
+  "topics": ["BTC", "USDT_ERC20"]
+}
+```
+
+<Expandable title="Response fields">
+  <ResponseField name="status" type="string">
+    `"ONLINE"` if your HyperDHT node is active, `"OFFLINE"` otherwise.
+  </ResponseField>
+  <ResponseField name="peerCount" type="number">
+    Number of peers currently connected to your node.
+  </ResponseField>
+  <ResponseField name="topics" type="array">
+    List of asset topics your node is currently announcing on.
+  </ResponseField>
+</Expandable>
+
+---
+
+## POST /v1/peers/join-topic
+
+Announce your node's presence on an asset-specific HyperDHT discovery topic. Joining a topic makes your node discoverable to other participants interested in trading that asset. You can join multiple topics — one for each asset you want to trade.
+
+### Request Body
+
+<ParamField body="topic" type="string" required>
+  The asset identifier to announce on (e.g. `"BTC"`, `"USDT_ERC20"`). Must match one of the assets in your active `CapabilityGrant` scope.
+</ParamField>
+
+### Example Request
+
+```json
+{
+  "topic": "BTC"
+}
+```
+
+### Example Response
+
+```json
+{
+  "topic": "BTC",
+  "status": "JOINED"
+}
+```
+
+---
+
+## POST /v1/peers/join-trade
+
+Open a private per-trade P2P channel with your counterparty. This creates a dedicated, encrypted peer-to-peer connection scoped to a specific trade — separate from the public asset topics and used for sensitive trade-specific communication.
+
+### Request Body
+
+<ParamField body="tradeId" type="string" required>
+  The ID of the trade to open a private channel for.
+</ParamField>
+
+### Example Request
+
+```json
+{
+  "tradeId": "trade_abc123"
+}
+```
+
+### Example Response
+
+```json
+{
+  "tradeId": "trade_abc123",
+  "channelStatus": "OPEN",
+  "connectedPeers": ["a1b2c3d4e5f6..."]
+}
+```
+
+<Tip>
+  Per-trade channels are automatically scoped and isolated. Even if both parties share public asset topics, the per-trade channel ensures that trade-specific messages are delivered only to the counterparty in that trade.
+</Tip>
+
+---
+
+## POST /v1/peers/broadcast-offer
+
+Broadcast an offer to all peers currently connected on a topic. This supplements the HTTP-based offer listing with real-time, direct-to-peer distribution — connected peers receive your offer immediately without polling the HTTP API.
+
+### Request Body
+
+Pass the same offer payload you would submit to `POST /v1/liquidity/offers`. The broadcast is delivered over the DHT to all peers currently connected on the matching asset topic.
+
+### Example Request
+
+```json
+{
+  "asset": "BTC",
+  "side": "SELL",
+  "amount": "0.1",
+  "priceUsd": "45000",
+  "paymentMethod": "PIX",
+  "fiatCurrency": "BRL"
+}
+```
+
+<Warning>
+  Broadcasting an offer over the P2P layer does not automatically publish it to the HTTP offer book. Call `POST /v1/liquidity/offers` separately if you want your offer discoverable through both channels.
+</Warning>

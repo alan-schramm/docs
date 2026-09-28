@@ -1,0 +1,127 @@
+---
+title: "Install and Set Up the Sails Protocol SDK for Node.js"
+sidebarTitle: "Installation"
+description: "Install @satsails/p2p-trading-sdk via npm, yarn, or pnpm. Set up the integration starter for a full Next.js boilerplate with React hooks and UI components."
+---
+
+The Sails Protocol SDK is distributed as two packages: `@satsails/p2p-trading-sdk` (the core TypeScript SDK) and `@satsails/sdk-react` (React hooks and UI components). Both are available on npm and work in Node.js 20+ and modern browser environments.
+
+## Install the Core SDK
+
+Install `@satsails/p2p-trading-sdk` to get `SailsClient` and all protocol modules — identity, liquidity, trading, settlement, reputation, peers, and more.
+
+<CodeGroup>
+```bash npm
+npm install @satsails/p2p-trading-sdk
+```
+
+```bash yarn
+yarn add @satsails/p2p-trading-sdk
+```
+
+```bash pnpm
+pnpm add @satsails/p2p-trading-sdk
+```
+</CodeGroup>
+
+## Install the React SDK
+
+If you are building a Next.js or React application, install `@satsails/sdk-react` alongside `@tanstack/react-query`, which powers its caching and background-refetch behavior.
+
+<CodeGroup>
+```bash npm
+npm install @satsails/sdk-react @tanstack/react-query
+```
+
+```bash yarn
+yarn add @satsails/sdk-react @tanstack/react-query
+```
+
+```bash pnpm
+pnpm add @satsails/sdk-react @tanstack/react-query
+```
+</CodeGroup>
+
+## Use the Integration Starter
+
+For new projects, the `sails-integration-starter` is the fastest path to a working integration. It is a standalone Next.js boilerplate that pulls both packages from the public npm registry — no monorepo required — and wires them together with a pre-configured `SailsClient` singleton, React provider setup, and two runnable example scripts.
+
+<Steps>
+  <Step title="Clone and install">
+    ```bash
+    git clone https://github.com/alan-schramm/sails-integration-starter.git
+    cd sails-integration-starter
+    npm install
+    ```
+  </Step>
+  <Step title="Configure your environment">
+    ```bash
+    cp .env.example .env
+    ```
+    The defaults already point at `http://localhost:3000`. Edit `.env` if your Sails node runs elsewhere.
+  </Step>
+  <Step title="Start the Next.js app">
+    ```bash
+    npm run dev
+    ```
+    Open [http://localhost:3001](http://localhost:3001). The **Discover offers** section makes a live `liquidity.discover()` call against your node.
+  </Step>
+</Steps>
+
+The starter also ships two standalone scripts that run complete protocol flows end-to-end against a real node:
+
+| Script | What it does |
+|---|---|
+| `npm run example:p2p-bitcoin-trade` | Runs the golden path: identity → publish offer → discover → open trade → chat → escrow lock and release |
+| `npm run example:escrow-with-arbitration` | Same setup, but the buyer raises a dispute and a Trusted Arbitrator resolves it (RFC-007 D4) |
+
+<Note>
+  The example scripts use the node's default `MOCK` escrow type, not `MULTISIG`. Real `MULTISIG` is genuinely non-custodial and requires on-chain funding that a script cannot automate. Read each script's header comment before running it.
+</Note>
+
+## Configure the Base URL
+
+`SailsClient` accepts a `baseUrl` at construction time. The integration starter reads it from an environment variable so you can point the same code at a local node, a staging node, or production without rebuilding.
+
+Set the variable in your `.env` file:
+
+```bash
+NEXT_PUBLIC_SAILS_BASE_URL=http://localhost:3000
+```
+
+Then construct the client:
+
+```typescript
+import { SailsClient } from '@satsails/p2p-trading-sdk';
+
+const client = new SailsClient({
+  baseUrl: process.env.NEXT_PUBLIC_SAILS_BASE_URL ?? 'http://localhost:3000',
+});
+```
+
+For server-side scripts or Node.js environments, the starter also reads `SAILS_BASE_URL` (without the `NEXT_PUBLIC_` prefix), so the same singleton works in both contexts.
+
+<Tip>
+  The integration starter's `src/sails-integration/client.ts` exports a lazy singleton `getSailsClient()` that handles both `NEXT_PUBLIC_SAILS_BASE_URL` and `SAILS_BASE_URL` automatically. Copy that pattern into your own project to avoid constructing a second client by accident.
+</Tip>
+
+## TypeScript Configuration
+
+The SDK ships with complete TypeScript types generated from the source. No `@types/` package is needed.
+
+- **Minimum TypeScript version:** 5.0
+- **Recommended:** enable `strict: true` in your `tsconfig.json`
+
+```json
+{
+  "compilerOptions": {
+    "strict": true,
+    "target": "ES2022",
+    "moduleResolution": "bundler"
+  }
+}
+```
+
+<Note>
+  The SDK is at v0.1 with a stable API contract — no breaking changes to any documented method, parameter, or return shape until v1.0. New optional parameters and new methods may be added at any time; those are additive and will not break existing code.
+</Note>

@@ -1,0 +1,71 @@
+---
+title: "Sails Protocol: The Nine Core Primitives Explained"
+sidebarTitle: "Protocol Primitives"
+description: "The nine building blocks of Sails Protocol — Identity, Intent, Discovery, Negotiation, Settlement, Reputation, Agent, Proof, and Dispute."
+---
+
+Sails Protocol is built from nine composable primitives. Every financial transaction — a P2P trade, an escrow, a dispute — is expressed using combinations of these primitives. Rather than hard-coding a single workflow, the protocol defines atomic contracts that any module can implement, allowing new use cases (lending, swaps, agent-driven automation) to be built on the same foundation without rewriting the core.
+
+## The Nine Primitives
+
+<CardGroup cols={2}>
+  <Card title="Identity" icon="key" href="/concepts/identity">
+    **WHO is participating.** Every participant is an Ed25519 keypair — self-sovereign, portable across wallets and platforms, with no centralized registry. Your keypair is your identity.
+  </Card>
+  <Card title="Intent" icon="bullseye" href="/concepts/intents">
+    **WHAT someone wants to happen.** An Intent is a machine-readable expression of a desired outcome — "buy 0.01 BTC at most $46,000 via PIX" — rather than an imperative command. The protocol coordinates around it.
+  </Card>
+  <Card title="Discovery" icon="magnifying-glass" href="/concepts/protocol-primitives">
+    **WHO ELSE this could happen with.** Discovery matches Intents with available offers and counterparties via P2P (HyperDHT) or an order book, without any central authority owning the matching process.
+  </Card>
+  <Card title="Negotiation" icon="comments" href="/concepts/protocol-primitives">
+    **HOW terms get agreed.** Two or more identities reach mutual agreement through a sequence of structured state transitions — offer, counter-offer, accept — over an E2E encrypted channel. Human chat and agent-to-agent negotiation both use the same primitive.
+  </Card>
+  <Card title="Settlement" icon="lock" href="/concepts/settlement">
+    **HOW value actually moves.** Pluggable escrow and multi-sig mechanisms lock and release funds according to agreed terms. Sails never takes custody — every provider enforces a non-custodial guarantee.
+  </Card>
+  <Card title="Reputation" icon="star" href="/concepts/reputation">
+    **WHY to trust a counterparty.** An outcome-based trust score (0–100) is computed from real trade history and tied cryptographically to an Identity — not to any platform, app, or email address.
+  </Card>
+  <Card title="Agent" icon="robot" href="/concepts/protocol-primitives">
+    **WHO (or what) acts on someone's behalf.** On-device AI (QVAC) can generate intents, assess risk, detect fraud patterns, and automate negotiation — always within explicit, delegated permission boundaries. An Agent never holds its own signing key.
+  </Card>
+  <Card title="Proof" icon="shield-check" href="/concepts/protocol-primitives">
+    **HOW a claim gets verified.** A structured `Claim → Proof → Verification` chain represents verifiable assertions for off-chain events — payment receipts, collateral proofs, delivery confirmations — in a single consistent format any module can consume.
+  </Card>
+  <Card title="Dispute" icon="gavel" href="/concepts/protocol-primitives">
+    **HOW a disagreement gets formally resolved.** A structured escalation path — Policy Engine → Agents → Trusted Arbiters → Resolution — is triggered when the happy path breaks down. A resolved dispute always produces a Settlement outcome: release, refund, or split.
+  </Card>
+</CardGroup>
+
+## How They Compose: A Full Trade
+
+The following walkthrough shows how the nine primitives chain together in a typical P2P BTC/fiat trade.
+
+<Steps>
+  <Step title="Seller establishes Identity and publishes an offer">
+    The seller creates an Ed25519 Identity and publishes a sell offer via the **Discovery** primitive (OpenLiquidity). The offer is broadcast to the P2P network and becomes discoverable by potential buyers.
+  </Step>
+  <Step title="Buyer expresses a TradeIntent">
+    The buyer creates a `TradeIntent` — "BUY 0.01 BTC, max $46,000, via PIX" — through the **Intent** primitive. The Intent Engine routes it to the Discovery layer.
+  </Step>
+  <Step title="Parties Negotiate via an encrypted channel">
+    Discovery ranks available offers and surfaces the best match. The two parties open a **Negotiation** channel (E2E encrypted via Secretstream). They exchange offers, counter-offers, and fiat payment details until terms are agreed.
+  </Step>
+  <Step title="Settlement escrow is created and locked">
+    With terms agreed, the **Settlement** primitive creates an escrow (e.g. Bitcoin multisig). The seller locks their BTC into the escrow — Sails never holds these funds.
+  </Step>
+  <Step title="Buyer submits payment Proof">
+    The buyer sends fiat directly to the seller (peer-to-peer, outside the protocol) and shares a **Proof** — a `payment_sent` Claim with a payment receipt as evidence — via the negotiation channel.
+  </Step>
+  <Step title="Escrow is released — Reputation updated">
+    The seller confirms receipt and signs the escrow release. The BTC settles to the buyer's wallet. Both parties' **Reputation** scores are updated automatically from the trade outcome.
+  </Step>
+  <Step title="If contested: Dispute process begins">
+    If either party disputes the outcome, the **Dispute** primitive is triggered. The escalation order runs: Policy Engine auto-resolution → Agent-assisted resolution → Trusted Arbiter ruling. The dispute always resolves back into a Settlement state transition.
+  </Step>
+</Steps>
+
+<Note>
+  Two additional components — the **Capability Registry** and the **Policy/Rules Engine** — work across all nine primitives without being primitives themselves. The Capability Registry enforces what each participant and agent is allowed to do. The Policy Engine applies configurable rules (fee rates, trust limits, routing weights) that govern how primitives behave. Neither has its own participant-facing lifecycle, which is why they are Core components rather than a tenth and eleventh primitive.
+</Note>

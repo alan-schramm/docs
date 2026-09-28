@@ -1,0 +1,15 @@
+---
+title: "Execute Your First P2P Trade with Sails Protocol SDK"
+sidebarTitle: "P2P Trade"
+description: "Step-by-step guide to publishing a sell offer, discovering it as a buyer, opening a trade, negotiating, and completing settlement — all non-custodially."
+---
+
+This guide walks you through a complete P2P BTC/fiat trade using the `@satsails/p2p-trading-sdk`. You'll act as both seller and buyer to understand the full flow — in production, each party uses their own client instance. Sails Protocol never takes custody of funds at any point: every lock, transfer, and release happens directly between you and your counterparty.
+
+<Note>
+  In production, seller and buyer run in separate processes and separate wallets — they share only `trade.id` and `escrow.id` to coordinate. Neither party has access to the other's `SailsClient` instance or session token.
+</Note>
+
+<Tip>
+  The default escrow type is `MOCK` on a local development node. For production non-custodial flows over real Bitcoin — using on-chain multisig (`MULTISIG`) or Lightning HODL invoices (`LIGHTNING_HODL`) — see the [Escrow Lifecycle](/guides/escrow-lifecycle) guide.
+</Tip>

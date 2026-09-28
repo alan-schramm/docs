@@ -1,0 +1,278 @@
+---
+title: "OpenProof API: Claims, Proofs, and Evidence Bundles"
+sidebarTitle: "Proof"
+description: "REST endpoints for asserting cryptographic claims, submitting payment evidence, verifying proofs, and retrieving full evidence bundles for a trade."
+---
+
+The OpenProof API lets you create a tamper-evident chain of claim → evidence → verification for any off-chain event — particularly useful for proving that a fiat payment was sent and received. Every proof bundle is hash-chained and can be optionally anchored to the Bitcoin blockchain via OpenTimestamps, giving you non-repudiable evidence that can be presented in a dispute or used for independent verification.
+
+---
+
+## POST /v1/proof/claims
+
+Assert a claim — the first step in the proof chain. A claim states what you are asserting (for example, that you sent a PIX payment) before you attach any evidence. Claims are scoped to a specific trade when a `tradeId` is provided.
+
+### Request Body
+
+<ParamField body="tradeId" type="string">
+  The trade this claim belongs to. Optional — not every claim is trade-related — but required for the claim to appear in a trade's evidence bundle (`GET /v1/proof/trades/:tradeId/bundle`).
+</ParamField>
+
+<ParamField body="claimType" type="string" required>
+  The type of claim being asserted. The value is an open string — accepted examples include:
+
+  | Value | Meaning |
+  |---|---|
+  | `payment_sent` | You have initiated a fiat payment to the counterparty. |
+  | `invoice_paid` | A Lightning or on-chain invoice has been paid. |
+  | `oracle_verified` | An oracle has confirmed an external condition. |
+  | `delivery_confirmed` | A physical or digital delivery has been confirmed. |
+  | `collateral_held` | Collateral assets are locked and held. |
+</ParamField>
+
+<ParamField body="assertion" type="object" required>
+  The substance of your claim — any JSON-serialisable value describing what you are asserting (e.g. `{ "amount": 4500, "currency": "BRL", "recipient": "abc123" }`). This field is intentionally open-ended; the protocol never enforces a specific shape.
+</ParamField>
+
+### Example Request
+
+```json
+{
+  "tradeId": "trade_abc123",
+  "claimType": "payment_sent",
+  "assertion": { "amount": 4500, "currency": "BRL", "recipient": "abc123" }
+}
+```
+
+### Example Response
+
+```json
+{
+  "claimId": "claim_001",
+  "claimedBy": "part_abc123",
+  "claimType": "payment_sent",
+  "assertion": { "amount": 4500, "currency": "BRL", "recipient": "abc123" },
+  "tradeId": "trade_abc123",
+  "createdAt": "2025-01-15T10:00:00Z"
+}
+```
+
+---
+
+## POST /v1/proof/proofs
+
+Attach evidence to an existing claim. Submit any JSON-serialisable value in `evidence` — a receipt URL, a transaction reference, a structured object, or any externally verifiable payload. The server always computes its own `sha256(canonicalize(evidence))` as the authoritative hash. If you supply a `claimedHash` and it does not match, the discrepancy is recorded as a `proof.hash_mismatch_detected` event but the proof is still accepted. The server also checks whether the same evidence fingerprint has been used against a different trade and emits `proof.duplicate_detected` if so — this is a flag, never a block.
+
+### Request Body
+
+<ParamField body="claimId" type="string" required>
+  The ID of the claim this evidence supports.
+</ParamField>
+
+<ParamField body="evidence" type="object" required>
+  The evidence payload — any JSON-serialisable value. Examples: a receipt URL string, a structured object with transaction details, or a hash of a media file.
+</ParamField>
+
+<ParamField body="claimedHash" type="string">
+  Optional SHA-256 hash of the evidence you computed client-side. If provided and it does not match the server's computation, the mismatch is flagged but the proof is still recorded.
+</ParamField>
+
+### Example Request
+
+```json
+{
+  "claimId": "claim_001",
+  "evidence": {
+    "receiptUrl": "https://receipts.example.com/pix-transfer-abc123.pdf",
+    "transactionRef": "E00000000202501151025s01234567890"
+  }
+}
+```
+
+---
+
+## POST /v1/proof/proofs/:id/verify-nonce
+
+Issue a single-use nonce before submitting a verification verdict. The nonce is required to prevent replay attacks on the verification step.
+
+### Path Parameters
+
+<ParamField path="id" type="string" required>
+  The ID of the proof you intend to verify.
+</ParamField>
+
+### Example Response
+
+```json
+{
+  "nonce": "nonce_a1b2c3d4",
+  "expiresAt": "2025-01-15T10:05:00Z"
+}
+```
+
+---
+
+## POST /v1/proof/proofs/:id/verify
+
+Submit a verification verdict for a proof. This records whether you — as a trade counterparty, arbiter, or QVAC agent — accept or reject the submitted evidence.
+
+### Path Parameters
+
+<ParamField path="id" type="string" required>
+  The ID of the proof being verified.
+</ParamField>
+
+### Request Body
+
+<ParamField body="verdict" type="string" required>
+  Your verdict: `"ACCEPTED"` or `"REJECTED"`.
+</ParamField>
+
+<ParamField body="nonce" type="string" required>
+  The single-use nonce obtained from `POST /v1/proof/proofs/:id/verify-nonce`.
+</ParamField>
+
+<ParamField body="reason" type="string">
+  An optional explanation for your verdict, especially useful when rejecting.
+</ParamField>
+
+### Example Request
+
+```json
+{
+  "verdict": "ACCEPTED",
+  "nonce": "nonce_a1b2c3d4",
+  "reason": "Receipt URL matches the agreed PIX amount and recipient."
+}
+```
+
+---
+
+## POST /v1/proof/proofs/:id/evidence
+
+Attach a media file to an existing proof as a signed `EvidenceReference`. The media bytes are stored via the `EvidenceProvider` (local filesystem by default) and never held directly by the protocol. OpenProof stores only a signed, hashed reference pointer. Your signature over the media's SHA-256 digest proves you submitted this file — no one can attach evidence on your behalf.
+
+### Path Parameters
+
+<ParamField path="id" type="string" required>
+  The ID of the proof to attach media evidence to.
+</ParamField>
+
+### Request Body
+
+<ParamField body="mediaBase64" type="string" required>
+  The raw media file, base64-encoded. Accepted formats depend on your node's `EvidenceProvider` configuration — typical support includes image and PDF files.
+</ParamField>
+
+<ParamField body="mimeType" type="string" required>
+  The MIME type of the media (e.g. `"image/png"`, `"application/pdf"`).
+</ParamField>
+
+<ParamField body="signatureHex" type="string" required>
+  Your Ed25519 signature over the SHA-256 digest of the raw media bytes, hex-encoded. Must be verifiable against the public key registered with your participant identity. This prevents anyone from attaching evidence as if it were submitted by another participant.
+</ParamField>
+
+### Example Request
+
+```json
+{
+  "mediaBase64": "iVBORw0KGgoAAAANSUhEUgAA...",
+  "mimeType": "image/png",
+  "signatureHex": "a1b2c3d4e5f6..."
+}
+```
+
+### Example Response
+
+```json
+{
+  "evidenceReferenceId": "evref_001",
+  "proofId": "proof_001",
+  "hash": "sha256:e3b0c44298fc1c149afb...",
+  "mimeType": "image/png",
+  "createdAt": "2025-01-15T10:02:00Z"
+}
+```
+
+<Note>
+  A self-declared timestamp on an `EvidenceReference` proves only that you submitted the file — it does not prove the file existed at that time. To establish non-repudiable provenance, anchor the reference to the Bitcoin blockchain via `POST /v1/proof/evidence/:id/anchor` after submission.
+</Note>
+
+---
+
+## GET /v1/proof/claims/:id/bundle
+
+Retrieve the full evidence bundle for a single claim, including the claim itself, all associated proofs, and all verification records. This endpoint is publicly readable — no authentication required.
+
+### Path Parameters
+
+<ParamField path="id" type="string" required>
+  The ID of the claim whose bundle you want to retrieve.
+</ParamField>
+
+### Example Response
+
+```json
+{
+  "claim": {
+    "claimId": "claim_001",
+    "claimType": "payment_sent",
+    "claimedBy": "part_abc123",
+    "createdAt": "2025-01-15T10:00:00Z"
+  },
+  "proofs": [
+    {
+      "proofId": "proof_001",
+      "evidence": {
+        "receiptUrl": "https://receipts.example.com/pix-transfer-abc123.pdf",
+        "transactionRef": "E00000000202501151025s01234567890"
+      },
+      "submittedAt": "2025-01-15T10:01:00Z"
+    }
+  ],
+  "verifications": [
+    {
+      "verificationId": "verif_001",
+      "verdict": "ACCEPTED",
+      "verifiedBy": "part_def456",
+      "verifiedAt": "2025-01-15T10:03:00Z"
+    }
+  ]
+}
+```
+
+---
+
+## GET /v1/proof/trades/:tradeId/bundle
+
+Retrieve the complete evidence bundle for an entire trade — every claim, proof, verification, and evidence reference associated with it, plus the hash-chained timeline of events. This endpoint is publicly readable — no authentication required.
+
+### Path Parameters
+
+<ParamField path="tradeId" type="string" required>
+  The ID of the trade whose full evidence bundle you want to retrieve.
+</ParamField>
+
+The response includes a `timeline` array with hash-chained entries (`entryHash` / `prevHash` per entry), which allows any third party to verify the integrity of the event sequence using `Timeline.verifyChain()`.
+
+<Note>
+  The `timeline` entries are hash-chained at write time — the chain is computed when each event is first persisted, not derived on read. This means the chain integrity is always verifiable, even if individual entries are reviewed in isolation.
+</Note>
+
+---
+
+## POST /v1/proof/evidence/:id/anchor
+
+Anchor an evidence reference to the Bitcoin blockchain via OpenTimestamps. This makes a genuine network call to a live OpenTimestamps calendar server and incurs a real (though typically minimal) cost.
+
+### Path Parameters
+
+<ParamField path="id" type="string" required>
+  The ID of the `EvidenceReference` to anchor.
+</ParamField>
+
+Anchoring is not performed automatically on every evidence submission — you (or a Policy Engine hook) decide when non-repudiation matters enough to warrant it. The resulting `AnchorProof` is persisted and included in future evidence bundle responses.
+
+<Tip>
+  Submit a `payment_sent` claim and its evidence before opening a dispute. A complete, anchored evidence bundle significantly strengthens your position and may trigger automated resolution through the Policy Engine — potentially resolving the dispute without human arbitration.
+</Tip>

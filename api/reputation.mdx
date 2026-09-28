@@ -1,0 +1,193 @@
+---
+title: "OpenReputation API: Trust Scores, Ratings, and Vouches"
+sidebarTitle: "Reputation"
+description: "REST endpoints for reading participant trust scores, browsing the leaderboard, rating trade counterparties, and submitting peer vouches in Sails Protocol."
+---
+
+The OpenReputation API provides read access to cryptographically-tied trust scores and write access for post-trade ratings and peer vouching. Scores are computed automatically from trade outcomes — they cannot be purchased or gamed. The only input to a participant's score is the `recordOutcome()` event triggered when a settlement completes; manual ratings submitted via `POST /v1/reputation/rate` are informational only and never alter the underlying score.
+
+---
+
+## GET /v1/reputation/:participantId
+
+Retrieve the full reputation score breakdown for a participant by their internal `participantId`.
+
+### Path Parameters
+
+<ParamField path="participantId" type="string" required>
+  The participant's internal identifier (e.g. `part_abc123`).
+</ParamField>
+
+### Example Response
+
+```json
+{
+  "participantId": "part_abc123",
+  "total": 87,
+  "tradeScore": 92,
+  "volumeScore": 78,
+  "settlementScore": 95,
+  "disputeRate": 0.02,
+  "totalTrades": 48,
+  "updatedAt": "2025-01-15T10:00:00Z"
+}
+```
+
+<Expandable title="Response fields">
+  <ResponseField name="participantId" type="string">
+    The participant's unique identifier.
+  </ResponseField>
+  <ResponseField name="total" type="number">
+    Composite trust score from 0–100.
+  </ResponseField>
+  <ResponseField name="tradeScore" type="number">
+    Score derived from successful trade completions.
+  </ResponseField>
+  <ResponseField name="volumeScore" type="number">
+    Score component reflecting historical trade volume.
+  </ResponseField>
+  <ResponseField name="settlementScore" type="number">
+    Score reflecting on-time, dispute-free settlements.
+  </ResponseField>
+  <ResponseField name="disputeRate" type="number">
+    Fraction of trades that resulted in a formal dispute.
+  </ResponseField>
+  <ResponseField name="totalTrades" type="number">
+    Total number of completed trades contributing to the score.
+  </ResponseField>
+  <ResponseField name="updatedAt" type="string">
+    ISO 8601 timestamp of the last score update.
+  </ResponseField>
+</Expandable>
+
+---
+
+## GET /v1/reputation/peer/:peerId
+
+Look up a reputation score using a participant's portable Pears peer identity instead of their internal `participantId`. This is useful when you know a counterparty's HyperDHT key but not their internal identifier.
+
+### Path Parameters
+
+<ParamField path="peerId" type="string" required>
+  The participant's Pears Ed25519 public key (their portable peer identity).
+</ParamField>
+
+The endpoint resolves the `peerId` to the corresponding `participantId` and returns the exact same score shape as `GET /v1/reputation/:participantId`.
+
+---
+
+## GET /v1/reputation/leaderboard
+
+Return the top participants ranked by composite reputation score. Use this to surface trusted counterparties in your UI or to seed offer-matching logic.
+
+### Query Parameters
+
+<ParamField query="limit" type="number" default="10">
+  Number of entries to return. Maximum is `100`.
+</ParamField>
+
+### Example Response
+
+```json
+{
+  "entries": [
+    {
+      "participantId": "part_abc123",
+      "total": 97,
+      "totalTrades": 120,
+      "rank": 1
+    },
+    {
+      "participantId": "part_def456",
+      "total": 94,
+      "totalTrades": 85,
+      "rank": 2
+    }
+  ],
+  "total": 500
+}
+```
+
+<Expandable title="Response fields">
+  <ResponseField name="entries" type="array">
+    Ordered list of top participants. Each entry includes `participantId`, `total` score, `totalTrades`, and `rank`.
+  </ResponseField>
+  <ResponseField name="total" type="number">
+    Total number of participants with a reputation score on the network.
+  </ResponseField>
+</Expandable>
+
+---
+
+## POST /v1/reputation/rate
+
+Submit a display rating for a counterparty after a completed trade. Authentication is required — only participants in the relevant trade may submit a rating.
+
+<Note>
+  This endpoint is informational only. Ratings submitted here are attached to the trade history for context but **do not affect** the computed reputation score. The score is driven exclusively by settlement outcomes — a party who cancels in bad faith cannot lower your score by leaving a punitive rating.
+</Note>
+
+### Request Body
+
+<ParamField body="tradeId" type="string" required>
+  The ID of the completed trade you are rating.
+</ParamField>
+
+<ParamField body="ratedId" type="string" required>
+  The `participantId` of the counterparty you are rating.
+</ParamField>
+
+<ParamField body="score" type="number" required>
+  A score from `1` (poor) to `5` (excellent).
+</ParamField>
+
+<ParamField body="comment" type="string">
+  Optional free-text feedback visible on the trade record.
+</ParamField>
+
+### Example Request
+
+```json
+{
+  "tradeId": "trade_xyz789",
+  "ratedId": "part_def456",
+  "score": 5,
+  "comment": "Great trader — fast payment, clear communication."
+}
+```
+
+---
+
+## POST /v1/reputation/vouch
+
+Vouch for another participant, creating a protocol-native attestation that stakes your own reputation. Authentication is required.
+
+<Warning>
+  Vouching puts your own reputation on the line. Only vouch for participants you have personally traded with and trust. You must have at least 3 completed trades and a positive reputation score to be eligible, and you can only vouch for any given participant once.
+</Warning>
+
+When you vouch for a participant, the protocol pre-signs their first `PaymentAccount` once they register one — giving your vouched contact a reputation head-start backed by your own standing.
+
+### Request Body
+
+<ParamField body="voucheeId" type="string" required>
+  The `participantId` of the participant you are vouching for.
+</ParamField>
+
+### Example Request
+
+```json
+{
+  "voucheeId": "part_new789"
+}
+```
+
+<Expandable title="Eligibility rules">
+  - You must have completed at least **3 trades**.
+  - Your reputation score must be **positive** (above the neutral threshold).
+  - You may vouch for any given participant **only once**. Submitting a duplicate vouch returns a `400` error.
+</Expandable>
+
+<Tip>
+  Vouching is most valuable for onboarding new participants who haven't yet built a trade history. Point new counterparties toward your vouch after a first successful trade.
+</Tip>

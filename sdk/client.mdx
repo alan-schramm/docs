@@ -1,0 +1,559 @@
+---
+title: "SailsClient Reference: SDK Methods and Modules"
+sidebarTitle: "SailsClient"
+description: "Complete reference for SailsClient — the main entry point to Sails Protocol. Covers all module methods: identity, liquidity, openp2p, settlement, reputation, peers, and more."
+---
+
+`SailsClient` is the single entry point for all Sails Protocol SDK operations. It provides module-namespaced methods for every protocol primitive — identity, liquidity, trading, settlement, reputation, peers, capabilities, proof, and agents. Import it from `@satsails/p2p-trading-sdk` and construct one instance per application.
+
+## Constructor
+
+```typescript
+import { SailsClient } from '@satsails/p2p-trading-sdk';
+
+const client = new SailsClient({
+  baseUrl: 'http://localhost:3000',
+  wallet: myWalletAdapter,   // optional
+  fetchImpl: customFetch,    // optional — for custom fetch in Node/Edge
+  webSocketImpl: CustomWS,   // optional — for non-browser WebSocket
+});
+```
+
+<ParamField path="baseUrl" type="string" required>
+  The base URL of your Sails node. All HTTP and WebSocket connections resolve relative to this value. Do not hardcode `localhost:3000` in production — read this from an environment variable.
+</ParamField>
+
+<ParamField path="wallet" type="WalletAdapter">
+  An optional wallet adapter that plugs your wallet's own signing, balance, and address logic into the SDK. When provided, the client can call `getBalance()`, `getWalletAddresses()`, `sendTransaction()`, and `signMessage()` on your behalf. See the `WalletAdapter` interface in the SDK type definitions for the required shape.
+</ParamField>
+
+<ParamField path="fetchImpl" type="(input: RequestInfo, init?: RequestInit) => Promise<Response>">
+  A custom `fetch` implementation. Use this when running in Node.js environments that do not provide a global `fetch`, or when you need a custom HTTP client (for example, one that injects proxy headers).
+</ParamField>
+
+<ParamField path="webSocketImpl" type="typeof WebSocket">
+  A custom WebSocket constructor. Use this in Node.js or Edge runtimes where the global `WebSocket` is unavailable. Pass the class itself, not an instance.
+</ParamField>
+
+---
+
+## Module Aliases
+
+Every module has both a **protocol name** (matching the underlying Sails module) and a **friendly alias**. Both names point to the exact same object — neither is deprecated.
+
+| Protocol name | Friendly alias | What it does |
+|---|---|---|
+| `client.identity` | `client.auth` | Register participants, Ed25519 challenge-response auth, session management |
+| `client.liquidity` | `client.offers` | Publish, discover, and manage offers; order book |
+| `client.openp2p` | `client.trades` | Open and manage trades; real-time chat |
+| `client.settlement` | `client.escrow` | Full escrow lifecycle: create, lock, release, refund, dispute |
+| `client.reputation` | `client.trustScore` | Reputation scores, leaderboard, rating submission |
+| `client.peers` | *(none)* | P2P transport node: start/stop, topic rooms, direct offer broadcast |
+| `client.capabilities` | *(none)* | RFC-013 Capability Registry: register, list, revoke grants |
+
+<Note>
+  `client.auth` and `client.identity` are the literal same object — verified by the SDK's own test suite with `client.auth === client.identity`-style assertions. The same applies to every alias pair in the table above. Use whichever name fits your mental model; they are both frozen permanently as of v0.1.
+</Note>
+
+---
+
+## `identity` / `auth`
+
+The identity module registers participants and manages authentication sessions. All mutating calls that require `requires session` in the table below depend on a session token set by `authenticate()` or `authenticateWithWallet()`.
+
+```typescript
+// 1. Create a new participant (generates an Ed25519 keypair automatically)
+const { participant, keypair } = await client.identity.create();
+
+// 2. Or create with an existing public key (wallet-backed — no raw secret key)
+const participant = await client.identity.createWithPublicKey(publicKeyHex, 'Alice');
+
+// 3. Authenticate with the generated keypair
+const { participantId, sessionToken } = await client.identity.authenticate(keypair);
+
+// 4. Or authenticate with a wallet signer
+const { sessionToken } = await client.identity.authenticateWithWallet(publicKeyHex, wallet);
+
+// 5. Read a participant's public profile
+const profile = await client.identity.get(participantId);
+
+// 6. Read the currently authenticated participant
+const me = await client.identity.me(); // requires session
+```
+
+<ResponseField name="create(keypair?, displayName?)" type="Promise<{ participant: Participant; keypair: Ed25519Keypair }>">
+  Creates a new participant. If you omit `keypair`, the SDK generates one. Store the returned `keypair.secretKey` securely — it cannot be recovered later.
+</ResponseField>
+
+<ResponseField name="createWithPublicKey(publicKeyHex, displayName?)" type="Promise<Participant>">
+  Registers a wallet-backed participant. The SDK never receives a raw secret key — signing happens in your wallet.
+</ResponseField>
+
+<ResponseField name="challenge(publicKeyHex)" type="Promise<{ challenge: string; expiresIn: number }>">
+  Fetches a one-time challenge string for the given public key. Pass the challenge to your wallet for signing, then call `authenticateWithWallet()`.
+</ResponseField>
+
+<ResponseField name="authenticate(keypair)" type="Promise<{ participantId: string; sessionToken: string }>">
+  Signs the pending challenge with the keypair's secret key and exchanges it for a session token. Also stores the token on the client so all subsequent calls are authenticated automatically.
+</ResponseField>
+
+<ResponseField name="authenticateWithWallet(publicKeyHex, wallet)" type="Promise<{ participantId: string; sessionToken: string }>">
+  Wallet-backed sign-in. The `wallet` argument must implement `signMessage(message: Uint8Array): Promise<Uint8Array>`. Never touches a raw secret key.
+</ResponseField>
+
+<ResponseField name="get(participantId)" type="Promise<Participant>">
+  Public read — returns any participant's profile by ID. Does not require a session.
+</ResponseField>
+
+<ResponseField name="me()" type="Promise<Participant>">
+  Returns the currently authenticated participant's profile. Requires an active session.
+</ResponseField>
+
+---
+
+## `liquidity` / `offers`
+
+The liquidity module lets sellers publish offers and lets buyers discover and match against them.
+
+```typescript
+// Publish an offer (requires session)
+const offer = await client.liquidity.publish({
+  asset: 'BTC',
+  side: 'SELL',
+  priceUsd: '45000.00',
+  minAmount: '0.001',
+  maxAmount: '0.1',
+  paymentMethod: 'PIX',
+  paymentDetails: 'my-pix-key@email.com',
+});
+
+// Discover offers matching a filter
+const { offers, sources, total, hasMore } = await client.liquidity.discover({
+  asset: 'BTC',
+  side: 'BUY',
+  limit: 20,
+  offset: 0,
+});
+
+// Fetch a single offer with the seller's profile attached
+const offerWithUser = await client.liquidity.getOffer(offerId);
+
+// Get the order book for an asset
+const { bids, asks, spread } = await client.liquidity.book('BTC');
+
+// Find the best matching offer for a given intent
+const match = await client.liquidity.match({ asset: 'BTC', side: 'BUY', amount: '0.01' });
+
+// Pause or cancel your own offer (requires session)
+await client.liquidity.updateStatus(offerId, 'PAUSED');   // ACTIVE | PAUSED | COMPLETED | CANCELLED
+
+// List your own offers, including non-ACTIVE ones (requires session)
+// Returns persisted Offer rows — not the LiquidityOfferSummary aggregation shape that discover()/book() return
+const myOffers = await client.liquidity.getMyOffers();
+```
+
+<ResponseField name="getMyOffers()" type="Promise<Offer[]>">
+  Returns the authenticated caller's own offers — including non-`ACTIVE` ones (paused, completed, cancelled). Returns persisted `Offer` rows, not the `LiquidityOfferSummary` aggregation shape that `discover()` and `book()` return. Requires a session.
+</ResponseField>
+
+<Note>
+  All monetary values — `priceUsd`, `minAmount`, `maxAmount`, `amount` — must be **decimal strings** (e.g. `"0.001"`), never JavaScript `number` values. Passing a number throws a `TypeError` immediately, before any network call, to prevent silent float-precision loss.
+</Note>
+
+<Note>
+  `discover()` returns `{ offers, sources, total, hasMore }`. The `sources` array lists which liquidity sources (e.g. `"internal"`, `"hodlhodl"`, `"robosats"`) contributed offers to the result. `total` and `hasMore` support pagination.
+</Note>
+
+---
+
+## `openp2p` / `trades`
+
+The trade module opens and manages P2P trades and provides the real-time chat channel for negotiation.
+
+```typescript
+// Open a trade against an offer (requires session)
+const trade = await client.openp2p.trade(offerId, '0.001');
+
+// Fetch a trade by its ID
+const trade = await client.openp2p.getTrade(tradeId);
+
+// Fetch a trade by the intent that created it
+const trade = await client.openp2p.getTradeByIntent(intentId);
+
+// Cancel a trade (requires session)
+await client.openp2p.updateTradeStatus(tradeId, 'CANCELLED');
+
+// Open the real-time negotiation channel (requires session)
+const channel = client.openp2p.chat(tradeId);
+channel.onMessage((msg) => console.log('New message:', msg));
+channel.onEvent((frame) => console.log('Event:', frame.type, frame.payload));
+channel.send({ content: 'Payment sent — here is the receipt.', msgType: 'TEXT' });
+channel.leave();   // leave the room but keep the connection open
+channel.close();   // close the WebSocket entirely
+
+// Fetch the full message history for a trade (requires session)
+const messages = await client.openp2p.getMessages(tradeId);
+
+// Recover missed messages after a reconnect — RFC-011 (requires session)
+const missed = await client.openp2p.reconcileTrade(tradeId, lastReceivedAt);
+```
+
+<ResponseField name="chat(tradeId, options?)" type="WebSocketChannel">
+  Opens a persistent WebSocket channel for the trade. The channel reconnects automatically with exponential backoff if the connection drops. Monitor connection state with `.onConnectionStateChange()`, which reports `'open'`, `'reconnecting'`, or `'closed'`.
+</ResponseField>
+
+<ResponseField name="reconcileTrade(tradeId, sinceMessageCreatedAt)" type="Promise<Message[]>">
+  Returns all messages created after `sinceMessageCreatedAt`. Pass `null` to retrieve the full history. Use this on reconnect to fill in any messages missed while the channel was down (RFC-011).
+</ResponseField>
+
+<Tip>
+  The integration starter's `TradeEventHandler` (`src/sails-integration/event-handler.ts`) wraps `openp2p.chat()` with typed dispatch for `TRADE_STATUS_UPDATE`, `ESCROW_STATUS_UPDATE`, `ERROR`, `USER_ONLINE`, and `USER_OFFLINE` frames, plus an in-memory message history buffer. Copy it into your project to avoid writing the same switch statement yourself.
+</Tip>
+
+---
+
+## `settlement` / `escrow`
+
+The settlement module manages the full escrow lifecycle. For `MULTISIG`, `LIGHTNING_HODL`, and `SAFE_GUARD_EVM` escrow types, funds are locked with client-held keys — Sails Protocol never holds your keys.
+
+```typescript
+// Create an escrow for a trade (requires session)
+const escrow = await client.settlement.create({
+  tradeId: trade.id,
+  type: 'MULTISIG',      // MOCK | MULTISIG | LIGHTNING_HODL | LIQUID_COVENANT | WDK_USDT_EVM | SAFE_GUARD_EVM
+  lockedAmount: '0.001',
+  asset: 'BTC',
+  timelockHours: 24,     // optional
+});
+
+// Submit your client-held public key (MULTISIG / LIGHTNING_HODL path)
+await client.settlement.submitKey(escrow.id, myPublicKeyHex);
+
+// Lock the funds
+await client.settlement.lock(escrow.id);
+
+// Mark off-chain payment as sent (buyer)
+await client.settlement.markPaymentSent(escrow.id);
+
+// Release funds to the buyer (requires session)
+await client.settlement.release(escrow.id, buyerPayoutAddress);
+
+// Refund funds to the seller (requires session)
+await client.settlement.refund(escrow.id);
+
+// Open a dispute (requires session)
+const dispute = await client.settlement.dispute(escrow.id, 'Buyer has not responded', evidence);
+
+// Read an escrow
+const escrow = await client.settlement.get(escrowId);
+```
+
+For **MULTISIG multi-signer release**, use the two-step flow instead of `release()` directly:
+
+```typescript
+// Step 1 — initiate (does not move funds)
+const pending = await client.settlement.initiateRelease(escrow.id, buyerPayoutAddress);
+
+// Step 2 — sign and submit the PSBT
+const signedPsbt = signEscrowPsbt(pending.psbtBase64, myPrivateKey);
+await client.settlement.submitTransactionSignature(escrow.id, signedPsbt);
+```
+
+Additional settlement methods:
+
+| Method | Auth required | Description |
+|---|---|---|
+| `getPendingTransaction(escrowId)` | No | Read an unsigned pending transaction |
+| `initiateRefund(escrowId)` | Yes | Mirror of `initiateRelease` for the refund path |
+| `listDisputes(pagination?)` | Yes | List your own disputes as an arbiter |
+| `getDispute(disputeId)` | No | Public read for any dispute |
+| `resolveDispute(disputeId, ruling, releaseToAddress?, refundToAddress?, splitBuyerBps?)` | Yes (arbiter) | Resolve as `RELEASE`, `REFUND`, or `SPLIT`. `RELEASE` requires `releaseToAddress`; `SPLIT` requires all three optional params. |
+| `appealDispute(disputeId)` | Yes (trade party) | Appeal a resolution — RFC-021 D6, market arbitration only |
+| `submitDisputeEvidence(disputeId, descriptor)` | Yes (trade party) | Attach evidence; may trigger QVAC auto-resolution |
+| `contestAutoResolution(disputeId)` | Yes (trade party) | Reject a proposed automated ruling |
+| `approveRelease(escrowId)` | Yes | RFC-021 two-person control approval |
+| `getReleaseApprovals(escrowId)` | No | Read approval status |
+| `registerArbiter(input)` | Yes | RFC-021 D2 permissionless arbiter registration |
+| `getArbiterProfile(participantId)` | No | Read an arbiter's profile |
+| `parseSafeGuardBundle(unsignedPsbtBase64)` | N/A | Pure parsing helper — no network call. SAFE_GUARD_EVM only |
+
+---
+
+## `reputation` / `trustScore`
+
+The reputation module returns computed trust scores. Scores are derived exclusively from settlement outcomes — the `rate()` method stores informational feedback but does **not** feed into the score returned by `get()`.
+
+```typescript
+// Get a participant's full reputation score
+const score = await client.reputation.get(participantId);
+// score: { participantId, total, tradeScore, volumeScore, settlementScore, disputeRate }
+
+// Get the top participants by reputation
+const leaders = await client.reputation.leaderboard(10);
+
+// Submit a rating after a completed trade (informational only — does not affect score)
+await client.reputation.rate({
+  tradeId: trade.id,
+  ratedId: counterpartyId,
+  score: 5,         // 1–5
+  comment: 'Fast and reliable.',
+});
+
+// Vouch for another participant (requires session — your own reputation is slashed
+// if the vouchee's first payment account is later abused)
+const vouch = await client.reputation.vouchFor(voucheeId);
+
+// Fetch a reputation score by Pears peer ID
+const score = await client.reputation.getScoreByPeerId(peerId);
+```
+
+<Warning>
+  Do not build UI that implies `rate()` "affects someone's reputation." Ratings are stored and displayed, but the `ReputationScore` returned by `get()` is computed solely from settlement outcomes (RFC-007 D8).
+</Warning>
+
+---
+
+## `peers`
+
+The peers module manages a HyperDHT node for direct P2P connectivity between participants. Use it to announce asset availability and open private channels without routing through the Sails node.
+
+```typescript
+// Start the local HyperDHT node
+const { peerId } = await client.peers.start(secretKeyBase64);
+
+// Announce on an asset topic so other peers can discover you
+await client.peers.joinTopic('BTC');
+
+// Open a private P2P channel for a specific trade
+await client.peers.joinTrade(tradeId);
+
+// Broadcast an offer directly to connected peers
+const { deliveredTo } = await client.peers.broadcastOffer({
+  asset: 'BTC',
+  side: 'SELL',
+  priceUsd: '45000.00',
+});
+
+// Check connection status
+const status = await client.peers.status();
+
+// Stop the node
+await client.peers.stop();
+```
+
+---
+
+## `capabilities`
+
+The capabilities module manages RFC-013 Capability Grants — declarations of what a participant or wallet can do and which scopes they have been granted.
+
+```typescript
+// Register a capability grant
+const grant = await client.capabilities.register({
+  capabilityName: 'p2p-trading',
+  scope: ['trade:create', 'escrow:lock', 'escrow:release'],
+  constraints: { maxTradeValue: '10000' },
+});
+
+// Derive and register capabilities directly from a WalletAdapter
+const grant = await client.capabilities.registerFromWallet(myWalletAdapter);
+
+// List all grants for a participant
+const grants = await client.capabilities.list(participantId);
+
+// Revoke a grant
+await client.capabilities.revoke(grant.grantId);
+```
+
+---
+
+## `proof`
+
+The proof module records and verifies evidence for claims made during a trade. It implements RFC-006 and RFC-007: a caller asserts a claim, submits evidence for it, and a verifier accepts or rejects the proof. Use `client.submitProof()` on the Intent facade for the common write path; this module covers reading evidence bundles, issuing verification nonces, and verifying proofs.
+
+```typescript
+// Assert a new claim (requires session)
+const claim = await client.proof.assertClaim({
+  claimType: 'payment_sent',
+  assertion: { amount: '500.00', currency: 'BRL', method: 'PIX' },
+  tradeId: trade.id,   // optional — scopes the claim into a trade's evidence bundle
+});
+
+// Submit evidence for the claim (requires session)
+const proof = await client.proof.submitProof({
+  claimId: claim.id,
+  evidence: { screenshotUrl: 'https://...' },
+});
+
+// Issue a one-time nonce so a verifier can sign off on the proof (requires session)
+const { nonce } = await client.proof.issueVerificationNonce(proof.id);
+
+// Verify a proof (requires session)
+const verification = await client.proof.verifyProof(proof.id, {
+  verdict: 'ACCEPTED',
+  nonce,
+});
+
+// Read the full evidence bundle for a claim (requires session)
+const bundle = await client.proof.getEvidenceBundle(claim.id);
+// bundle: { claim, proofs: [{ id, evidence, evidenceHash, verifications: [...] }] }
+```
+
+<ResponseField name="assertClaim(input)" type="Promise<Proof>">
+  Creates a new claim. `claimType` is open-ended — well-known values include `payment_sent`, `invoice_paid`, `oracle_verified`, `delivery_confirmed`, and `collateral_held`. Requires a session.
+</ResponseField>
+
+<ResponseField name="submitProof(input)" type="Promise<Proof>">
+  Attaches evidence to an existing claim. `claimedHash` is optional — pass a hex-encoded SHA-256 of the evidence for server-side integrity verification. Requires a session.
+</ResponseField>
+
+<ResponseField name="issueVerificationNonce(proofId)" type="Promise<{ nonce: string }>">
+  Issues a one-time nonce. Pass this nonce to `verifyProof()` to prevent replay attacks. Requires a session.
+</ResponseField>
+
+<ResponseField name="verifyProof(proofId, input)" type="Promise<Verification>">
+  Records an `ACCEPTED` or `REJECTED` verdict. `input.nonce` must match the one issued by `issueVerificationNonce()`. Requires a session.
+</ResponseField>
+
+<ResponseField name="getEvidenceBundle(claimId)" type="Promise<EvidenceBundle>">
+  Returns the full evidence bundle for a single claim, including all attached proofs and their verifications. Requires a session.
+</ResponseField>
+
+---
+
+## `agents`
+
+The agents module exposes QVAC-backed structured generation and risk assessment. It uses real local LLM inference server-side — each call is a genuine inference request, not a simple read/write, so all three methods require an active session.
+
+```typescript
+// Generate a structured TradeIntent from a plain-language goal (requires session)
+const tradeIntent = await client.agents.generateTradeIntent(
+  'I want to buy 0.01 BTC with Brazilian reais using PIX'
+);
+// tradeIntent: { asset: 'BTC', side: 'BUY', maxValue: '...', minValue: '...', currency: 'BRL', fiatMethod: 'PIX' }
+
+// Generate a structured offer intent from a plain-language goal (requires session)
+const offerIntent = await client.agents.generateOfferIntent(
+  'Sell small amounts of BTC, accepting PIX and bank transfer'
+);
+// offerIntent: { asset: 'BTC', side: 'SELL', minAmount: '...', maxAmount: '...', paymentMethod: '...' }
+
+// Assess risk for a structured intent before acting on it (requires session)
+const risk = await client.agents.assessIntentRisk({
+  asset: 'BTC',
+  side: 'BUY',
+  maxValue: '500.00',
+  currency: 'BRL',
+  fiatMethod: 'PIX',
+});
+// risk: { risk: 'low' | 'medium' | 'high', reasoning: '...', recommendation: 'proceed' | 'hold' | 'reject' }
+```
+
+<ResponseField name="generateTradeIntent(goal)" type="Promise<GeneratedTradeIntent>">
+  Interprets a natural-language goal and returns a structured `TradeIntent` payload ready to pass to `client.createIntent('TradeIntent', ...)`. Requires a session.
+</ResponseField>
+
+<ResponseField name="generateOfferIntent(goal)" type="Promise<GeneratedOfferIntent>">
+  Interprets a natural-language goal and returns a structured offer payload ready to pass to `client.liquidity.publish()`. Requires a session.
+</ResponseField>
+
+<ResponseField name="assessIntentRisk(intent)" type="Promise<IntentRiskAssessment>">
+  Evaluates a structured intent and returns a risk level (`low`, `medium`, or `high`), a natural-language reasoning string, and a recommendation (`proceed`, `hold`, or `reject`). Requires a session.
+</ResponseField>
+
+---
+
+## Top-Level Methods
+
+These methods sit directly on `client` rather than on a named module.
+
+### Intent facade
+
+```typescript
+// Create a trade intent (requires session)
+const intent = await client.createIntent('TradeIntent', {
+  asset: 'BTC',
+  side: 'BUY',
+  maxValue: '500.00',
+  currency: 'USD',
+  fiatMethod: 'PIX',
+  minReputationRating: 4,
+});
+
+// Cancel an intent (requires session)
+await client.cancelIntent(intentId);
+
+// Open a dispute from an intent (requires session)
+const dispute = await client.dispute(intentId, 'Counterparty stopped responding');
+```
+
+<Note>
+  `negotiate()`, `submitProof()`, and `releaseAsset()` exist on the intent facade but `negotiate()` currently throws `SailsNotImplementedError` — the fire-and-forget signature cannot represent the real `WebSocketChannel` negotiation flow. Use `client.openp2p.chat()` directly for negotiation.
+</Note>
+
+### Wallet helpers
+
+These methods delegate to the `WalletAdapter` you passed at construction time.
+
+```typescript
+const balance = await client.getBalance('BTC');
+const addresses = await client.getWalletAddresses();
+const txId = await client.sendTransaction(asset, tx);
+const signature = await client.signMessage(message);
+```
+
+### Client-held key signing helpers
+
+For `MULTISIG`, `LIGHTNING_HODL`, and `SAFE_GUARD_EVM` escrow types, use these top-level exports to sign transaction material client-side:
+
+```typescript
+import {
+  generateEscrowKeypair,
+  signEscrowPsbt,
+  signEscrowArkTx,
+  signEscrowSafeUserOp,
+} from '@satsails/p2p-trading-sdk';
+
+const keypair = generateEscrowKeypair();   // raw secp256k1 keypair
+
+const signedPsbt = signEscrowPsbt(psbtBase64, keypair.privateKey);           // MULTISIG
+const signedArk  = await signEscrowArkTx(bundleJson, keypair.privateKey);    // LIGHTNING_HODL
+const signedOp   = signEscrowSafeUserOp(unsignedPsbtBase64, keypair.privateKey); // SAFE_GUARD_EVM
+```
+
+### Session management
+
+```typescript
+// Manually set a session token (useful when loading from secure storage)
+client.setSessionToken(token);
+
+// Read the current session token
+const token = client.getSessionToken();
+```
+
+---
+
+## Error Handling
+
+The SDK throws typed error subclasses rather than raw HTTP errors. Catch them by class:
+
+```typescript
+import {
+  SailsRateLimitError,
+  SailsNotImplementedError,
+  SailsAuthError,
+} from '@satsails/p2p-trading-sdk';
+
+try {
+  await client.openp2p.trade(offerId, '0.001');
+} catch (err) {
+  if (err instanceof SailsRateLimitError) {
+    // 429 — back off before retrying. POST/PATCH/DELETE are never auto-retried.
+    console.log('Rate limited. Retry after:', err.retryAfter);
+  } else if (err instanceof SailsAuthError) {
+    // Session expired — re-authenticate
+  }
+}
+```
+
+GET requests retry automatically on `502`, `503`, `504`, and `429` responses (using the server's `Retry-After` header when present, falling back to exponential backoff with jitter). Mutating requests (`POST`, `PATCH`, `DELETE`) are never auto-retried — they throw immediately so you can decide whether a retry is safe.

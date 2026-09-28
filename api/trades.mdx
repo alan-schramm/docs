@@ -1,0 +1,400 @@
+---
+title: "OpenP2P API: Create Trades, Chat, and Track Status"
+sidebarTitle: "Trades"
+description: "REST and WebSocket endpoints for opening P2P trades, retrieving trade details, and connecting to the real-time encrypted negotiation channel."
+---
+
+The OpenP2P API is where Sails Protocol's coordination layer comes to life. Once you've found a matching offer through OpenLiquidity, you use this module to open a trade, exchange payment details with your counterparty over an end-to-end encrypted negotiation channel, and track the trade's progress from escrow lock through final settlement. All trade communication runs over a **Secretstream E2E encrypted WebSocket** — neither the server nor any third party can read your messages.
+
+<Note>
+  All authenticated endpoints require `Authorization: Bearer <token>`. Obtain a session token via `POST /v1/identity/authenticate` (see [Identity](/api/identity)). Your `participantId` is always derived from your session — never pass it in a request body.
+</Note>
+
+---
+
+## Open a Trade
+
+<br />
+
+**`POST /v1/openp2p/trades`** *(authentication required)*
+
+Start a new P2P trade against an existing offer. Calling this endpoint transitions the trade into an `ACTIVE` state and opens the negotiation channel with your counterparty.
+
+### Request Body
+
+<ParamField body="offerId" type="string" required>
+  The ID of the offer you want to trade against. Obtain this from `GET /v1/liquidity/offers` or `POST /v1/liquidity/match`.
+</ParamField>
+
+<ParamField body="amount" type="string" required>
+  The amount of the asset you want to trade, as a decimal string. Must be within the offer's `minAmount`–`maxAmount` range.
+</ParamField>
+
+### Response
+
+<ResponseField name="id" type="string">
+  Unique trade ID (e.g. `trade_xyz789`). Use this to reference the trade in all subsequent calls.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Current trade status. Starts as `ACTIVE`.
+</ResponseField>
+
+<ResponseField name="offerId" type="string">
+  The offer this trade was opened against.
+</ResponseField>
+
+<ResponseField name="buyerId" type="string">
+  Participant ID of the buyer.
+</ResponseField>
+
+<ResponseField name="sellerId" type="string">
+  Participant ID of the seller.
+</ResponseField>
+
+<ResponseField name="amount" type="string">
+  The agreed trade amount as a decimal string.
+</ResponseField>
+
+<ResponseField name="asset" type="string">
+  The asset being traded (e.g. `BTC`).
+</ResponseField>
+
+<ResponseField name="createdAt" type="string">
+  ISO 8601 timestamp when the trade was opened.
+</ResponseField>
+
+<CodeGroup>
+```bash Request
+curl -X POST https://your-node.example.com/v1/openp2p/trades \
+  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "offerId": "offer_abc123",
+    "amount": "0.01"
+  }'
+```
+
+```json Response
+{
+  "success": true,
+  "data": {
+    "id": "trade_xyz789",
+    "status": "ACTIVE",
+    "offerId": "offer_abc123",
+    "buyerId": "part_abc123",
+    "sellerId": "part_xyz",
+    "amount": "0.01",
+    "asset": "BTC",
+    "createdAt": "2025-01-15T10:05:00Z"
+  }
+}
+```
+</CodeGroup>
+
+<Tip>
+  After opening a trade, connect to the WebSocket channel (`/v1/openp2p/chat`) and send a `JOIN_TRADE` message to begin real-time negotiation with your counterparty. See the [WebSocket section](#websocket-negotiation-channel) below.
+</Tip>
+
+---
+
+## Get Trade Details
+
+<br />
+
+**`GET /v1/openp2p/trades/:id`** *(authentication required)*
+
+Retrieve the full details of a trade, including its associated offer, escrow record, and most recent chat messages. Only the buyer or seller of the trade can access this endpoint.
+
+### Path Parameters
+
+<ParamField path="id" type="string" required>
+  The trade ID (e.g. `trade_xyz789`).
+</ParamField>
+
+<CodeGroup>
+```bash Request
+curl https://your-node.example.com/v1/openp2p/trades/trade_xyz789 \
+  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..."
+```
+
+```json Response
+{
+  "success": true,
+  "data": {
+    "id": "trade_xyz789",
+    "status": "ACTIVE",
+    "offerId": "offer_abc123",
+    "buyerId": "part_abc123",
+    "sellerId": "part_xyz",
+    "amount": "0.01",
+    "asset": "BTC",
+    "createdAt": "2025-01-15T10:05:00Z",
+    "offer": {
+      "id": "offer_abc123",
+      "priceUsd": "45000",
+      "paymentMethod": "PIX"
+    },
+    "escrow": {
+      "id": "escrow_def456",
+      "type": "MULTISIG",
+      "status": "FUNDS_LOCKED",
+      "lockedAmount": "0.01"
+    },
+    "recentMessages": [
+      {
+        "id": "msg_001",
+        "senderId": "part_xyz",
+        "content": "Ready when you are. PIX key: seller@example.com",
+        "msgType": "TEXT",
+        "sentAt": "2025-01-15T10:06:00Z"
+      }
+    ]
+  }
+}
+```
+</CodeGroup>
+
+---
+
+## Resolve a Trade by Intent ID
+
+<br />
+
+**`GET /v1/openp2p/trades/by-intent/:intentId`** *(authentication required)*
+
+Look up the trade that was created from a specific intent. This is useful when you've created an intent programmatically via the Intent Engine and need to retrieve the resulting trade record.
+
+### Path Parameters
+
+<ParamField path="intentId" type="string" required>
+  The intent ID to resolve (e.g. `intent_abc`).
+</ParamField>
+
+<CodeGroup>
+```bash Request
+curl https://your-node.example.com/v1/openp2p/trades/by-intent/intent_abc \
+  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..."
+```
+
+```json Response
+{
+  "success": true,
+  "data": {
+    "id": "trade_xyz789",
+    "status": "ACTIVE",
+    "offerId": "offer_abc123",
+    "buyerId": "part_abc123",
+    "sellerId": "part_xyz",
+    "amount": "0.01",
+    "asset": "BTC",
+    "createdAt": "2025-01-15T10:05:00Z"
+  }
+}
+```
+</CodeGroup>
+
+---
+
+## Update Trade Status
+
+<br />
+
+**`PATCH /v1/openp2p/trades/:id/status`** *(authentication required)*
+
+Update the status of an active trade. Currently supports transitioning a trade to `CANCELLED`. Only the buyer or seller of the trade may call this endpoint.
+
+### Path Parameters
+
+<ParamField path="id" type="string" required>
+  The trade ID to update.
+</ParamField>
+
+### Request Body
+
+<ParamField body="status" type="string" required>
+  The target status. Supported values: `ACTIVE`, `CANCELLED`.
+</ParamField>
+
+<CodeGroup>
+```bash Request
+curl -X PATCH https://your-node.example.com/v1/openp2p/trades/trade_xyz789/status \
+  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..." \
+  -H "Content-Type: application/json" \
+  -d '{ "status": "CANCELLED" }'
+```
+
+```json Response
+{
+  "success": true,
+  "data": {
+    "id": "trade_xyz789",
+    "status": "CANCELLED",
+    "updatedAt": "2025-01-15T10:45:00Z"
+  }
+}
+```
+</CodeGroup>
+
+<Warning>
+  A `CANCELLED` trade that both parties agreed to cancel always results in a **Neutral** reputation outcome — it can never negatively affect either party's score (see the Sails Reputation model). If your counterparty is not cooperating, use the dispute flow via [Settlement](/api/settlement) instead.
+</Warning>
+
+---
+
+## Get Chat Message History
+
+<br />
+
+**`GET /v1/openp2p/chat/:tradeId/messages`** *(authentication required)*
+
+Retrieve the message history for a trade's negotiation channel. Results are paginated in reverse-chronological order (newest messages first by default).
+
+### Path Parameters
+
+<ParamField path="tradeId" type="string" required>
+  The trade ID whose message history you want to fetch.
+</ParamField>
+
+### Query Parameters
+
+<ParamField query="limit" type="integer">
+  Number of messages to return. Min `1`, max `50`, default `20`.
+</ParamField>
+
+<ParamField query="before" type="string">
+  Cursor for pagination — pass the `id` of the oldest message from your previous response to retrieve the next page of older messages.
+</ParamField>
+
+<CodeGroup>
+```bash Request
+curl "https://your-node.example.com/v1/openp2p/chat/trade_xyz789/messages?limit=20" \
+  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..."
+```
+
+```json Response
+{
+  "success": true,
+  "data": {
+    "messages": [
+      {
+        "id": "msg_003",
+        "senderId": "part_abc123",
+        "content": "Payment sent! Here is my receipt.",
+        "msgType": "TEXT",
+        "sentAt": "2025-01-15T10:20:00Z"
+      },
+      {
+        "id": "msg_002",
+        "senderId": "part_abc123",
+        "content": "Sending payment now via PIX.",
+        "msgType": "TEXT",
+        "sentAt": "2025-01-15T10:15:00Z"
+      },
+      {
+        "id": "msg_001",
+        "senderId": "part_xyz",
+        "content": "Ready when you are. PIX key: seller@example.com",
+        "msgType": "TEXT",
+        "sentAt": "2025-01-15T10:06:00Z"
+      }
+    ],
+    "hasMore": false,
+    "nextCursor": null
+  }
+}
+```
+</CodeGroup>
+
+---
+
+## WebSocket Negotiation Channel
+
+<br />
+
+**`WS /v1/openp2p/chat`**
+
+Connect to the real-time, end-to-end encrypted negotiation channel. The WebSocket connection carries all live trade coordination — chat messages, trade status updates, escrow events, and risk alerts — between counterparties without the server being able to read the content.
+
+<Note>
+  For full WebSocket protocol details, message types, authentication, and reconnection guidance, see the [WebSocket Reference](/api/websocket) page.
+</Note>
+
+### Messages You Send (client → server)
+
+<Tabs>
+  <Tab title="JOIN_TRADE">
+    Join a trade's chat room to start receiving real-time events.
+
+    ```json
+    {
+      "type": "JOIN_TRADE",
+      "payload": { "tradeId": "trade_xyz789" }
+    }
+    ```
+  </Tab>
+  <Tab title="SEND_MESSAGE">
+    Send a text message to your counterparty within a joined trade.
+
+    ```json
+    {
+      "type": "SEND_MESSAGE",
+      "payload": {
+        "tradeId": "trade_xyz789",
+        "content": "Payment sent! Check your account.",
+        "msgType": "TEXT"
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="LEAVE_TRADE">
+    Leave a trade's chat room.
+
+    ```json
+    {
+      "type": "LEAVE_TRADE",
+      "payload": { "tradeId": "trade_xyz789" }
+    }
+    ```
+  </Tab>
+  <Tab title="PING">
+    Keep the connection alive.
+
+    ```json
+    {
+      "type": "PING",
+      "payload": {}
+    }
+    ```
+  </Tab>
+</Tabs>
+
+### Events You Receive (server → client)
+
+<Expandable title="Server-push event types">
+  | Event type | Description |
+  |---|---|
+  | `NEW_MESSAGE` | A new chat message was sent in a trade room you've joined |
+  | `TRADE_STATUS_UPDATE` | The trade's status changed (e.g. `ACTIVE` → `CANCELLED`) |
+  | `ESCROW_STATUS_UPDATE` | The escrow status changed (e.g. `CREATED` → `FUNDS_LOCKED`) — auto-pushed via the event bus |
+  | `RISK_WARNING` | The Social Engineering Agent flagged a message for a known fraud pattern. Detection only — the trade is never blocked or altered automatically |
+  | `USER_ONLINE` | A counterparty connected to the channel |
+  | `USER_OFFLINE` | A counterparty disconnected |
+  | `PONG` | Response to a `PING` keepalive |
+  | `ERROR` | A server-side error occurred for your connection |
+</Expandable>
+
+---
+
+## Error Reference
+
+<Expandable title="OpenP2P error codes">
+  | `error` | HTTP | When it occurs |
+  |---|---|---|
+  | `VALIDATION_ERROR` | 400 | Missing required field, or `amount` is outside the offer's min/max range |
+  | `AUTH_ERROR` | 401 | Missing or expired session token |
+  | `FORBIDDEN` | 403 | Attempting to access or modify a trade that does not belong to your session |
+  | `NOT_FOUND` | 404 | Trade ID or intent ID does not exist |
+  | `RATE_LIMIT_EXCEEDED` | 429 | Too many requests — check `Retry-After` |
+  | `INTERNAL_ERROR` | 500 | Unexpected server error |
+</Expandable>

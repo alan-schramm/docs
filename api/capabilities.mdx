@@ -1,0 +1,147 @@
+---
+title: "Capabilities API: Declare What Your Wallet Supports"
+sidebarTitle: "Capabilities"
+description: "REST endpoints to register, list, and revoke CapabilityGrants — the allow-listed scopes governing offer matching and protocol access."
+---
+
+Capability grants let you declare what your wallet or application supports — which assets, fiat rails, and protocol features are available. Other participants use these declarations for offer matching, and the protocol enforces them as access-control rules. Grants are self-issued: you declare and grant yourself scope over your own capabilities. The protocol uses an allow-list model — anything outside your declared scope is denied by construction.
+
+---
+
+## POST /v1/capabilities/register
+
+Self-issue a `CapabilityGrant` declaring your wallet's supported assets, fiat rails, and protocol features. Authentication is required — only you can issue a grant for your own participant identity.
+
+### Request Body
+
+<ParamField body="assets" type="array" required>
+  List of crypto assets your wallet supports. Example values: `"BTC"`, `"USDT_ERC20"`, `"ETH"`.
+</ParamField>
+
+<ParamField body="fiatRails" type="array" required>
+  List of fiat payment rails your application can handle. Example values: `"PIX"`, `"BANK_TRANSFER"`, `"SEPA"`, `"SEPA_INSTANT"`, `"ACH"`, `"UPI"`.
+</ParamField>
+
+<ParamField body="supportsP2PTrading" type="boolean">
+  Set to `true` if your application supports the full OpenP2P trade flow, including escrow and chat.
+</ParamField>
+
+<ParamField body="supportsOnchainSettlement" type="boolean">
+  Set to `true` if your application can sign and broadcast on-chain settlement transactions.
+</ParamField>
+
+### Example Request
+
+```json
+{
+  "assets": ["BTC", "USDT_ERC20"],
+  "fiatRails": ["PIX", "BANK_TRANSFER"],
+  "supportsP2PTrading": true,
+  "supportsOnchainSettlement": true
+}
+```
+
+### Example Response
+
+```json
+{
+  "grantId": "grant_abc123",
+  "grantedTo": "part_abc123",
+  "capabilityName": "p2p-trading",
+  "scope": ["BTC", "USDT_ERC20", "PIX", "BANK_TRANSFER"],
+  "issuedBy": "part_abc123",
+  "grantedAt": "2025-01-15T10:00:00Z",
+  "status": "ACTIVE"
+}
+```
+
+<Expandable title="Response fields">
+  <ResponseField name="grantId" type="string">
+    Unique identifier for this capability grant.
+  </ResponseField>
+  <ResponseField name="grantedTo" type="string">
+    The `participantId` this grant belongs to.
+  </ResponseField>
+  <ResponseField name="capabilityName" type="string">
+    The functional category this grant covers.
+  </ResponseField>
+  <ResponseField name="scope" type="array">
+    The allow-listed set of capabilities granted. The protocol denies any action outside this list.
+  </ResponseField>
+  <ResponseField name="issuedBy" type="string">
+    For self-issued grants, this matches `grantedTo`.
+  </ResponseField>
+  <ResponseField name="grantedAt" type="string">
+    ISO 8601 timestamp when the grant was issued.
+  </ResponseField>
+  <ResponseField name="status" type="string">
+    `"ACTIVE"` on creation. Changes to `"REVOKED"` after calling the revoke endpoint.
+  </ResponseField>
+</Expandable>
+
+<Note>
+  You can auto-register capabilities directly from your `WalletAdapter` using the SDK:
+
+  ```typescript
+  await client.capabilities.registerFromWallet(myAdapter);
+  ```
+
+  This derives the `CapabilityGrant` from your wallet's own `getCapabilities()` response, so you don't need to manually construct the request body.
+</Note>
+
+---
+
+## GET /v1/capabilities/:participantId
+
+List all active (non-revoked) capability grants for a participant. This endpoint is publicly readable — counterparties and the offer-matching engine use it to verify what a participant supports before initiating a trade.
+
+### Path Parameters
+
+<ParamField path="participantId" type="string" required>
+  The `participantId` whose active grants you want to retrieve.
+</ParamField>
+
+### Example Response
+
+```json
+{
+  "grants": [
+    {
+      "grantId": "grant_abc123",
+      "grantedTo": "part_abc123",
+      "capabilityName": "p2p-trading",
+      "scope": ["BTC", "USDT_ERC20", "PIX", "BANK_TRANSFER"],
+      "grantedAt": "2025-01-15T10:00:00Z",
+      "status": "ACTIVE"
+    }
+  ]
+}
+```
+
+Only grants with `status: "ACTIVE"` are returned. Revoked grants are excluded from this response.
+
+---
+
+## POST /v1/capabilities/:grantId/revoke
+
+Revoke an active capability grant. Authentication is required — you can only revoke your own grants. After revocation, the grant is excluded from the public listing and the protocol will no longer honour the associated scopes during offer matching or access checks.
+
+### Path Parameters
+
+<ParamField path="grantId" type="string" required>
+  The ID of the grant to revoke.
+</ParamField>
+
+### Example Response
+
+```json
+{
+  "grantId": "grant_abc123",
+  "status": "REVOKED",
+  "revokedAt": "2025-01-15T12:00:00Z"
+}
+```
+
+<Warning>
+  Revoking a grant is immediate. Any in-flight offer matching or access checks that depend on the revoked scope may fail after revocation. If you need to update your capabilities (for example, to add a new asset), revoke the existing grant and register a new one with the updated scope.
+</Warning>

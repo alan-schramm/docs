@@ -1,0 +1,101 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "name": "Sails Protocol",
+  "theme": "luma",
+  "logo": {
+    "light": "/images/ocon-logo-laranja.png",
+    "dark": "/images/ocon-logo-laranja.png"
+  },
+  "favicon": {
+    "light": "/images/ocon-logo-laranja.png",
+    "dark": "/images/ocon-logo-laranja.png"
+  },
+  "colors": {
+    "primary": "#fc4d06",
+    "light": "#fca47c",
+    "dark": "#f4efe7"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/alan-schramm/Sails-Protocol"
+    }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/protocol-primitives",
+              "concepts/identity",
+              "concepts/intents",
+              "concepts/settlement",
+              "concepts/reputation"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/p2p-trade",
+              "guides/escrow-lifecycle",
+              "guides/disputes",
+              "guides/ai-agents",
+              "guides/wallet-adapter"
+            ]
+          },
+          {
+            "group": "SDK",
+            "pages": [
+              "sdk/installation",
+              "sdk/client",
+              "sdk/react-hooks"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api/overview",
+              "api/authentication"
+            ]
+          },
+          {
+            "group": "Endpoints",
+            "pages": [
+              "api/identity",
+              "api/liquidity",
+              "api/trades",
+              "api/settlement",
+              "api/reputation",
+              "api/agents",
+              "api/proof",
+              "api/capabilities",
+              "api/peers"
+            ]
+          },
+          {
+            "group": "Real-Time",
+            "pages": [
+              "api/websocket"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
